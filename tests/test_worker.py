@@ -24,7 +24,7 @@ def bookings(db):
     db.execute("DROP TABLE bookings")
 
 
-def book_tool(writes=True):
+def book_tool(writes=True, returns_dict=True):
     """A create_booking tool that claims success; with writes=False it never saves."""
 
     @verilays.action(
@@ -33,19 +33,19 @@ def book_tool(writes=True):
         verify=recipes.pg_row_matches(
             connect=bookings_conn,
             table="bookings",
-            lookup_field={"id": "booking_id"},
+            lookup_field="id",
             fields_to_compare=["room", "start_time"],
         ),
     )
     def create_booking(room, start_time):
         if not writes:
-            return {"booking_id": 999}
+            return {"id": 999}
         with bookings_conn() as conn:
             row = conn.execute(
                 "INSERT INTO bookings (room, start_time) VALUES (%s, %s) RETURNING id",
                 (room, start_time),
             ).fetchone()
-        return {"booking_id": row[0]}
+        return {"id": row[0]} if returns_dict else row[0]
 
     return create_booking
 
@@ -57,7 +57,8 @@ def only_row(db):
 
 
 def test_saved_booking_is_verified_and_the_decision_is_logged(bookings, caplog):
-    book_tool()(room=4, start_time="10:00")
+    bookings.execute("INSERT INTO bookings (room, start_time) VALUES (5, '12:00')")  # decoy, id 1
+    book_tool()(room=4, start_time="10:00")  # id 2
     now = datetime.datetime(2026, 11, 19, 12, 0, tzinfo=datetime.timezone.utc)
 
     with caplog.at_level(logging.INFO, logger="verilays"):
@@ -67,7 +68,7 @@ def test_saved_booking_is_verified_and_the_decision_is_logged(bookings, caplog):
     assert row["status"] == "verified"
     assert row["attempts"] == 1
     assert row["updated_at"] == now
-    assert row["evidence"]["row"] == {"room": "4", "start_time": "10:00:00"}
+    assert row["evidence"] == {"key": {"id": 2}, "row": {"room": "4", "start_time": "10:00:00"}}
     assert "→ verified (check verified, attempt 1)" in caplog.text
     assert "10:00:00" in caplog.text  # the value behind the decision
 
@@ -103,13 +104,10 @@ def test_two_matching_rows_are_ambiguous_and_stay_pending(bookings, caplog):
     @verilays.action(
         type="book_room",
         system="postgres:bookings",
-        verify=recipes.pg_row_matches(
-            bookings_conn, "bookings", lookup_field={"room": lambda p, r: p["room"]},
-            fields_to_compare=[],
-        ),
+        verify=recipes.pg_row_matches(bookings_conn, "bookings", lookup_field="room", fields_to_compare=[]),
     )
     def book_room(room):
-        return None
+        return {"room": room}
 
     bookings.execute("INSERT INTO bookings (room) VALUES (4), (4)")
     book_room(4)
@@ -199,40 +197,8 @@ def test_check_returning_a_non_checkresult_stays_pending_and_the_next_action_sti
     assert "check returned True, not a CheckResult" in caplog.text
 
 
-def short_form_tool(returns_id=True):
-    """A tool using the short recipe forms: lookup_field="id", fields_to_compare=[...]."""
-
-    @verilays.action(
-        type="create_booking",
-        system="postgres:bookings",
-        verify=recipes.pg_row_matches(
-            bookings_conn, "bookings", lookup_field="id", fields_to_compare=["room", "start_time"]
-        ),
-    )
-    def create_booking(room, start_time):
-        with bookings_conn() as conn:
-            new_id = conn.execute(
-                "INSERT INTO bookings (room, start_time) VALUES (%s, %s) RETURNING id",
-                (room, start_time),
-            ).fetchone()[0]
-        return {"id": new_id} if returns_id else new_id
-
-    return create_booking
-
-
-def test_short_forms_look_up_by_result_field_and_compare_params(bookings):
-    short_form_tool()(room=4, start_time="10:00")
-    bookings.execute("INSERT INTO bookings (room, start_time) VALUES (5, '12:00')")  # a decoy row
-
-    run_once()
-
-    row = only_row(bookings)
-    assert row["status"] == "verified"
-    assert row["evidence"] == {"key": {"id": 1}, "row": {"room": "4", "start_time": "10:00:00"}}
-
-
 def test_result_without_the_lookup_field_stays_pending_with_a_clear_warning(bookings, caplog):
-    short_form_tool(returns_id=False)(room=4, start_time="10:00")  # returns 1, not {"id": 1}
+    book_tool(returns_dict=False)(room=4, start_time="10:00")  # returns 1, not {"id": 1}
 
     with caplog.at_level(logging.INFO, logger="verilays"):
         run_once()
