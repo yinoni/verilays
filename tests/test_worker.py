@@ -33,8 +33,8 @@ def book_tool(writes=True):
         verify=recipes.pg_row_matches(
             connect=bookings_conn,
             table="bookings",
-            key={"id": lambda params, result: result["booking_id"]},
-            expect={"room": "room", "start_time": "start_time"},
+            lookup_field={"id": "booking_id"},
+            fields_to_compare=["room", "start_time"],
         ),
     )
     def create_booking(room, start_time):
@@ -103,7 +103,10 @@ def test_two_matching_rows_are_ambiguous_and_stay_pending(bookings, caplog):
     @verilays.action(
         type="book_room",
         system="postgres:bookings",
-        verify=recipes.pg_row_matches(bookings_conn, "bookings", key={"room": "room"}, expect={}),
+        verify=recipes.pg_row_matches(
+            bookings_conn, "bookings", lookup_field={"room": lambda p, r: p["room"]},
+            fields_to_compare=[],
+        ),
     )
     def book_room(room):
         return None
@@ -194,3 +197,47 @@ def test_check_returning_a_non_checkresult_stays_pending_and_the_next_action_sti
     assert rows["sloppy"]["attempts"] == 1
     assert rows["fine"]["status"] == "verified"
     assert "check returned True, not a CheckResult" in caplog.text
+
+
+def short_form_tool(returns_id=True):
+    """A tool using the short recipe forms: lookup_field="id", fields_to_compare=[...]."""
+
+    @verilays.action(
+        type="create_booking",
+        system="postgres:bookings",
+        verify=recipes.pg_row_matches(
+            bookings_conn, "bookings", lookup_field="id", fields_to_compare=["room", "start_time"]
+        ),
+    )
+    def create_booking(room, start_time):
+        with bookings_conn() as conn:
+            new_id = conn.execute(
+                "INSERT INTO bookings (room, start_time) VALUES (%s, %s) RETURNING id",
+                (room, start_time),
+            ).fetchone()[0]
+        return {"id": new_id} if returns_id else new_id
+
+    return create_booking
+
+
+def test_short_forms_look_up_by_result_field_and_compare_params(bookings):
+    short_form_tool()(room=4, start_time="10:00")
+    bookings.execute("INSERT INTO bookings (room, start_time) VALUES (5, '12:00')")  # a decoy row
+
+    run_once()
+
+    row = only_row(bookings)
+    assert row["status"] == "verified"
+    assert row["evidence"] == {"key": {"id": 1}, "row": {"room": "4", "start_time": "10:00:00"}}
+
+
+def test_result_without_the_lookup_field_stays_pending_with_a_clear_warning(bookings, caplog):
+    short_form_tool(returns_id=False)(room=4, start_time="10:00")  # returns 1, not {"id": 1}
+
+    with caplog.at_level(logging.INFO, logger="verilays"):
+        run_once()
+
+    row = only_row(bookings)
+    assert row["status"] == "pending"
+    assert row["attempts"] == 1
+    assert "result has no field 'id' (got 1)" in caplog.text

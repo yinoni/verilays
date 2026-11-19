@@ -4,18 +4,28 @@ from psycopg.rows import tuple_row
 from verilays.checks import CheckResult
 
 
-def pg_row_matches(connect, table, key, expect):
-    """Check that exactly one row in `table` matches `key` and has the `expect` values.
+def pg_row_matches(connect, table, lookup_field, fields_to_compare):
+    """Check that exactly one row in `table` matches `lookup_field` and has the `fields_to_compare` values.
 
-    Each value in `key` and `expect` is a param name (str) or fn(params, result).
+    lookup_field: "id" finds the row where column id = result["id"].
+    fields_to_compare: ["room"] checks that column room = params["room"].
+    When names differ, pass a dict {column: name}; a value can also be fn(params, result).
     """
+    if isinstance(lookup_field, str):
+        lookup_field = {lookup_field: lookup_field}
+    if not isinstance(fields_to_compare, dict):
+        fields_to_compare = {f: f for f in fields_to_compare}
 
     def check(params, result, ctx):
-        def value(src):
-            return src(params, result) if callable(src) else params[src]
+        def from_result(name):
+            if not isinstance(result, dict) or name not in result:
+                raise LookupError(f"result has no field {name!r} (got {result!r})")
+            return result[name]
 
-        keys = {col: value(src) for col, src in key.items()}
-        wanted = {col: value(src) for col, src in expect.items()}
+        keys = {col: src(params, result) if callable(src) else from_result(src)
+                for col, src in lookup_field.items()}
+        wanted = {col: src(params, result) if callable(src) else params[src]
+                  for col, src in fields_to_compare.items()}
         # Postgres does the comparing, so "10:00" matches a time column holding 10:00:00.
         query = sql.SQL("SELECT {cols} FROM {table} WHERE {where} LIMIT 2").format(
             cols=sql.SQL(", ").join(
