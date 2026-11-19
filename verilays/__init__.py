@@ -14,6 +14,10 @@ def init(dsn):
 
 
 def action(type, system, *, verify):
+    if not callable(verify):
+        raise TypeError(f"verify must be a function, got {verify!r}")
+    inspect.signature(verify).bind(None, None, None)  # the worker calls verify(params, result, row)
+
     def decorate(fn):
         sig = inspect.signature(fn)
         registry[type] = {"system": system, "verify": verify}

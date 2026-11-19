@@ -35,8 +35,8 @@ verilays.init(dsn="postgres://...")          # where Verilays keeps its own tabl
     verify=recipes.pg_row_matches(
         connect=get_bookings_conn,           # customer's own connection factory, per action
         table="bookings",
-        key={"id": "book_id"},               # column -> param name
-        expect={"start_time": "start_time"}, # str = param name, callable = fn(params, result)
+        lookup_field="id",                   # find the row where column id = result["id"]
+        fields_to_compare=["start_time"],    # column start_time must = params["start_time"]
     ),
     recheck=["0s", "1m", "10m", "1h"],       # default
     deadline="24h",                          # default
