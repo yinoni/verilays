@@ -173,3 +173,24 @@ def test_unregistered_type_is_skipped_and_logged(db, caplog):
     assert row["status"] == "pending"
     assert row["attempts"] == 0
     assert "gone_tool skipped: type not registered" in caplog.text
+
+
+def test_check_returning_a_non_checkresult_stays_pending_and_the_next_action_still_runs(db, caplog):
+    @verilays.action(type="sloppy", system="crm", verify=lambda p, r, c: True)
+    def first():
+        return None
+
+    @verilays.action(type="fine", system="crm", verify=lambda p, r, c: CheckResult.verified())
+    def second():
+        return None
+
+    first()
+    second()
+    with caplog.at_level(logging.INFO, logger="verilays"):
+        run_once()
+
+    rows = {r["action_type"]: r for r in db.execute("SELECT * FROM verilays_actions")}
+    assert rows["sloppy"]["status"] == "pending"
+    assert rows["sloppy"]["attempts"] == 1
+    assert rows["fine"]["status"] == "verified"
+    assert "check returned True, not a CheckResult" in caplog.text

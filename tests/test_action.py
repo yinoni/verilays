@@ -60,3 +60,14 @@ def test_each_call_inserts_its_own_row(db):
 def test_verify_is_required():
     with pytest.raises(TypeError, match="verify"):
         verilays.action(type="create_booking", system="postgres:bookings")
+
+
+def test_verify_that_is_not_a_function_fails_at_import():
+    with pytest.raises(TypeError, match="verify must be a function"):
+        verilays.action(type="create_booking", system="postgres:bookings", verify="oops")
+
+
+def test_verify_that_cannot_take_params_result_row_fails_at_import():
+    with pytest.raises(TypeError):
+        verilays.action(type="create_booking", system="postgres:bookings",
+                        verify=lambda params, result: None)

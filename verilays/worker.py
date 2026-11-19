@@ -5,6 +5,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 import verilays
+from verilays.checks import CheckResult
 from verilays.store import _jsonb
 
 log = logging.getLogger("verilays")
@@ -30,6 +31,8 @@ def run_once(now=None):
             attempt = row["attempts"] + 1
             try:
                 res = entry["verify"](row["params"], row["result"], row)
+                if not isinstance(res, CheckResult):
+                    raise TypeError(f"check returned {res!r}, not a CheckResult")
             except Exception:
                 log.warning("action %s/%s check raised, stays pending (attempt %d)",
                             row["action_id"], row["action_type"], attempt, exc_info=True)
