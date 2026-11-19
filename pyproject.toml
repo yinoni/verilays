@@ -1,0 +1,20 @@
+[project]
+name = "verilays"
+version = "0.0.1"
+description = "Catch agent actions that report success but didn't happen"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["psycopg[binary]>=3.2", "click>=8.1"]
+
+[project.scripts]
+verilays = "verilays.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

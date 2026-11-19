@@ -1,0 +1,9 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: verilays
+      POSTGRES_PASSWORD: verilays
+      POSTGRES_DB: verilays
+    # 5432x is taken by local Supabase
+    ports: ["55432:5432"]
