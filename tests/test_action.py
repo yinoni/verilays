@@ -22,10 +22,10 @@ def test_init_creates_table_with_every_spec_column_and_is_idempotent(db):
     }
     assert set(columns) == {
         "action_id", "run_id", "action_type", "system", "entity_key", "params", "result",
-        "error", "status", "evidence", "duplicate_of", "attempts", "next_check_at",
+        "error", "status", "evidence", "check", "duplicate_of", "attempts", "next_check_at",
         "deadline_at", "created_at", "updated_at",
     }
-    assert columns["run_id"] == columns["duplicate_of"] == "YES"
+    assert columns["run_id"] == columns["duplicate_of"] == columns["check"] == "YES"
 
 
 def test_wrapped_tool_returns_result_unchanged_and_records_one_pending_row(db):
