@@ -207,3 +207,54 @@ def test_result_without_the_lookup_field_stays_pending_with_a_clear_warning(book
     assert row["status"] == "pending"
     assert row["attempts"] == 1
     assert "result has no field 'id' (got 1)" in caplog.text
+
+
+def postgres_tool():
+    """A create_booking tool that saves its check as data; no verify function, nothing in registry."""
+
+    @verilays.action.postgres("create_booking", db="bookings", table="bookings",
+                              lookup_field="id", fields_to_compare=["room", "start_time"])
+    def create_booking(room, start_time):
+        with bookings_conn() as conn:
+            row = conn.execute(
+                "INSERT INTO bookings (room, start_time) VALUES (%s, %s) RETURNING id",
+                (room, start_time),
+            ).fetchone()
+        return {"id": row[0]}
+
+    return create_booking
+
+
+def test_action_postgres_is_verified_with_only_the_db_env_var(bookings, monkeypatch):
+    monkeypatch.setenv("VERILAYS_DB_BOOKINGS", DSN)
+    postgres_tool()(room=4, start_time="10:00")
+
+    run_once()
+
+    row = only_row(bookings)
+    assert row["status"] == "verified"
+    assert row["evidence"] == {"key": {"id": 1}, "row": {"room": "4", "start_time": "10:00:00"}}
+
+
+def test_action_postgres_without_the_db_env_var_stays_pending_with_a_clear_warning(
+        bookings, monkeypatch, caplog):
+    monkeypatch.delenv("VERILAYS_DB_BOOKINGS", raising=False)
+    postgres_tool()(room=4, start_time="10:00")
+
+    run_once()
+
+    row = only_row(bookings)
+    assert row["status"] == "pending"
+    assert row["attempts"] == 1
+    assert "VERILAYS_DB_BOOKINGS is not set" in caplog.text
+
+
+def test_check_for_an_unknown_system_stays_pending_with_a_clear_warning(db, caplog):
+    store.insert_action(DSN, "charge", "stripe", {}, None, check={"amount": 5})
+
+    run_once()
+
+    row = only_row(db)
+    assert row["status"] == "pending"
+    assert row["attempts"] == 1
+    assert "unknown system 'stripe'; known: postgres" in caplog.text
