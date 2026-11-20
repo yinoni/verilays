@@ -16,3 +16,12 @@ def db():
         verilays.registry.clear()
         verilays.init(DSN)
         yield conn
+
+
+@pytest.fixture
+def bookings(db):
+    """The customer's own table, in the same Postgres."""
+    db.execute("DROP TABLE IF EXISTS bookings")
+    db.execute("CREATE TABLE bookings (id serial PRIMARY KEY, room int, start_time time)")
+    yield db
+    db.execute("DROP TABLE bookings")
