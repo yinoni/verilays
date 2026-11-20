@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 
 import pytest
@@ -71,3 +72,58 @@ def test_verify_that_cannot_take_params_result_row_fails_at_import():
     with pytest.raises(TypeError):
         verilays.action(type="create_booking", system="postgres:bookings",
                         verify=lambda params, result: None)
+
+
+def test_tool_that_raises_reraises_the_same_error_and_records_a_failed_row(db):
+    @verilays.action(type="create_booking", system="test", verify=never_checked)
+    def create_booking(room):
+        raise ValueError(f"room {room} taken")
+
+    with pytest.raises(ValueError, match="room 4 taken"):
+        create_booking(4)
+
+    row = db.execute("SELECT * FROM verilays_actions").fetchone()
+    assert row["status"] == "failed"
+    assert row["params"] == {"room": 4}
+    assert row["error"] == "ValueError('room 4 taken')"
+
+
+def test_async_tool_returns_its_result_and_records_a_pending_row(db):
+    @verilays.action(type="create_booking", system="test", verify=never_checked)
+    async def create_booking(room, n=1):
+        return {"room": room}
+
+    assert asyncio.run(create_booking(6)) == {"room": 6}
+
+    row = db.execute("SELECT * FROM verilays_actions").fetchone()
+    assert row["status"] == "pending"
+    assert row["params"] == {"room": 6, "n": 1}
+
+
+def test_async_tool_that_raises_reraises_the_same_error_and_records_a_failed_row(db):
+    @verilays.action(type="create_booking", system="test", verify=never_checked)
+    async def create_booking(room):
+        raise ValueError(f"room {room} taken")
+
+    with pytest.raises(ValueError, match="room 5 taken"):
+        asyncio.run(create_booking(5))
+
+    row = db.execute("SELECT * FROM verilays_actions").fetchone()
+    assert row["status"] == "failed"
+    assert row["error"] == "ValueError('room 5 taken')"
+
+
+def test_store_down_tool_still_returns_and_a_warning_is_logged(monkeypatch, caplog):
+    monkeypatch.setattr(verilays, "_dsn", "postgresql://x@localhost:1/x")  # closed port
+
+    @verilays.action(type="create_booking", system="test", verify=never_checked)
+    def create_booking(room):
+        return {"room": room}
+
+    @verilays.action(type="create_booking_async", system="test", verify=never_checked)
+    async def create_booking_async(room):
+        return {"room": room}
+
+    assert create_booking(7) == {"room": 7}
+    assert asyncio.run(create_booking_async(8)) == {"room": 8}
+    assert caplog.text.count("insert record error") == 2
