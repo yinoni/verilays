@@ -34,13 +34,13 @@ def create_table(dsn):
         conn.execute(CREATE_TABLE)
 
 
-def insert_action(dsn, action_type, system, params, result):
+def insert_action(dsn, action_type, system, params, result, status="pending", error=None):
     # shortcut: fixed 24h deadline and an immediate first check; #3 makes them configurable.
     # shortcut: one connection per call; add a pool if tool-call latency shows it.
     with psycopg.connect(dsn) as conn:
         conn.execute(
             """INSERT INTO verilays_actions
-               (action_type, system, params, result, status, next_check_at, deadline_at)
-               VALUES (%s, %s, %s, %s, 'pending', now(), now() + interval '24 hours')""",
-            (action_type, system, _jsonb(params), _jsonb(result)),
+               (action_type, system, params, result, status, next_check_at, deadline_at, error)
+               VALUES (%s, %s, %s, %s, %s, now(), now() + interval '24 hours', %s)""",
+            (action_type, system, _jsonb(params), _jsonb(result), status, error),
         )
