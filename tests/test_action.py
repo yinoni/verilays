@@ -127,3 +127,18 @@ def test_store_down_tool_still_returns_and_a_warning_is_logged(monkeypatch, capl
     assert create_booking(7) == {"room": 7}
     assert asyncio.run(create_booking_async(8)) == {"room": 8}
     assert caplog.text.count("insert record error") == 2
+
+
+def test_action_postgres_saves_its_check_in_the_row_and_needs_no_verify(db):
+    @verilays.action.postgres("create_booking", db="bookings", table="bookings",
+                              lookup_field="id", fields_to_compare=["room", "start_time"])
+    def create_booking(room, start_time):
+        return {"id": 1}
+
+    assert create_booking(4, "10:00") == {"id": 1}
+
+    row = db.execute("SELECT * FROM verilays_actions").fetchone()
+    assert row["system"] == "postgres"
+    assert row["check"] == {"db": "bookings", "table": "bookings", "lookup_field": "id",
+                            "fields_to_compare": ["room", "start_time"]}
+    assert verilays.registry == {}
