@@ -1,6 +1,8 @@
+import datetime
 import functools
 import inspect
 import logging
+import re
 
 from verilays import store
 
@@ -8,6 +10,17 @@ log = logging.getLogger(__name__)
 _dsn = None
 
 registry = {}
+
+_UNITS = {"s": "seconds", "m": "minutes", "h": "hours"}
+
+
+def parse_duration(text):
+    """"10s", "5m", "1h" → a timedelta. Anything else raises ValueError."""
+    match = re.fullmatch(r"(\d+)([smh])", text) if isinstance(text, str) else None
+    if match is None:
+        raise ValueError(f"deadline must look like '10s', '5m' or '1h', got {text!r}")
+    amount, unit = match.groups()
+    return datetime.timedelta(**{_UNITS[unit]: int(amount)})
 
 
 def init(dsn):
@@ -25,8 +38,12 @@ def _record(type, system, arguments, result, status="pending", error=None, check
     except Exception as e:
         log.warning("insert record error: %s", e)
 
-def action(tool_name, system, *, verify=None, check=None):
-    """With check (saved in the row), the worker needs no app code; without it, verify is required."""
+def action(tool_name, system, *, verify=None, check=None, deadline="1m"):
+    """With check (saved in the row), the worker needs no app code; without it, verify is required.
+
+    deadline: how long the worker keeps looking for the write before the action is missing.
+    """
+    deadline = parse_duration(deadline)
     if check is None:
         if not callable(verify):
             raise TypeError(f"verify must be a function, got {verify!r}")
@@ -69,10 +86,10 @@ def action(tool_name, system, *, verify=None, check=None):
     return decorate
 
 
-def _postgres(tool_name, db, table, lookup_field, fields_to_compare):
+def _postgres(tool_name, db, table, lookup_field, fields_to_compare, deadline="1m"):
     """The worker reads db's URL from VERILAYS_POSTGRES_<DB> and checks the row with pg_row_matches."""
     return action(tool_name, "postgres", check={"db": db, "table": table, "lookup_field": lookup_field,
-                                           "fields_to_compare": fields_to_compare})
+                                           "fields_to_compare": fields_to_compare}, deadline=deadline)
 
 
 action.postgres = _postgres

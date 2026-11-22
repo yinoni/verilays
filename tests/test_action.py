@@ -154,3 +154,19 @@ def test_tool_called_before_init_still_returns_and_warns_clearly(monkeypatch, ca
 
     assert create_booking(4) == {"id": 1}
     assert "create_booking not recorded: verilays.init(dsn) was never called" in caplog.text
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("10s", datetime.timedelta(seconds=10)),
+    ("5m", datetime.timedelta(minutes=5)),
+    ("1h", datetime.timedelta(hours=1)),
+])
+def test_deadline_strings_parse(text, expected):
+    assert verilays.parse_duration(text) == expected
+
+
+@pytest.mark.parametrize("bad", ["5 min", "1d", "m", "-5m", "", 60])
+def test_bad_deadline_is_rejected_when_the_tool_is_decorated(bad):
+    with pytest.raises(ValueError, match="deadline must look like '10s', '5m' or '1h'"):
+        verilays.action.postgres("create_booking", db="bookings", table="bookings",
+                                 lookup_field="id", fields_to_compare=["room"], deadline=bad)
