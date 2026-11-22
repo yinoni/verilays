@@ -1,3 +1,4 @@
+import contextlib
 import datetime
 import logging
 import os
@@ -18,7 +19,7 @@ class ConfigError(Exception):
     """The worker is set up wrong (a missing env var, an unknown system); retrying won't help."""
 
 
-def _postgres(check):
+def _postgres(check, connections):
     db_name = check['db'].upper()
     env = f"VERILAYS_POSTGRES_{db_name}"
 
@@ -26,23 +27,29 @@ def _postgres(check):
         raise ConfigError(f"{env} is not set; set it to the URL of the {check['db']!r} database")
 
     url = os.environ[env]
+    if url not in connections:
+        # autocommit: a failed query (say, a wrong table) must not abort the next row's check.
+        connections[url] = psycopg.connect(url, autocommit=True)
+    conn = connections[url]
 
-    return pg_row_matches(lambda: psycopg.connect(url), check["table"],
+    # nullcontext: pg_row_matches's `with` uses the pass's connection without closing it.
+    return pg_row_matches(lambda: contextlib.nullcontext(conn), check["table"],
                           check["lookup_field"], check["fields_to_compare"])
 
 
 # One entry per system: turns the check saved in the row into a verify function.
-# Each system reads its connection from VERILAYS_<SYSTEM>_<NAME>.
+# Each system reads its connection from VERILAYS_<SYSTEM>_<NAME>, opened once per pass and kept
+# in `connections` (URL → connection).
 SYSTEMS = {"postgres": _postgres}
 
 
-def _verify_from_check(row):
+def _verify_from_check(row, connections):
     if row["system"] not in SYSTEMS:
         raise ConfigError(f"unknown system {row['system']!r}; known: {', '.join(SYSTEMS)}")
 
     fn = SYSTEMS[row["system"]]
 
-    return fn(row["check"])
+    return fn(row["check"], connections)
 
 
 BATCH_SIZE = 100
@@ -57,27 +64,32 @@ def run_once(now=None):
     now = now or datetime.datetime.now(datetime.timezone.utc)
     # A row that stays pending must not come back in this pass, so each batch starts after the last one.
     after = (datetime.datetime.min.replace(tzinfo=datetime.timezone.utc), uuid.UUID(int=0))
-    with psycopg.connect(verilays._dsn, row_factory=dict_row) as conn:
-        while True:
-            # The row locks are held until the batch commits, so a second worker skips these rows.
-            with conn.transaction():
-                rows = conn.execute(
-                    "SELECT * FROM verilays_actions WHERE status = 'pending'"
-                    " AND (created_at, action_id) > (%s, %s)"
-                    " ORDER BY created_at, action_id LIMIT %s FOR UPDATE SKIP LOCKED",
-                    (*after, BATCH_SIZE),
-                ).fetchall()
-                # shortcut: one query and one connection per row; batch per table
-                # (WHERE id = ANY(...)) when pending rows reach the thousands.
-                for row in rows:
-                    _check_row(conn, row, now)
-            if len(rows) < BATCH_SIZE:
-                return
-            last = rows[-1]
-            after = (last["created_at"], last["action_id"])
+    connections = {}
+    try:
+        with psycopg.connect(verilays._dsn, row_factory=dict_row) as conn:
+            while True:
+                # The row locks are held until the batch commits, so a second worker skips these rows.
+                with conn.transaction():
+                    rows = conn.execute(
+                        "SELECT * FROM verilays_actions WHERE status = 'pending'"
+                        " AND (created_at, action_id) > (%s, %s)"
+                        " ORDER BY created_at, action_id LIMIT %s FOR UPDATE SKIP LOCKED",
+                        (*after, BATCH_SIZE),
+                    ).fetchall()
+                    # shortcut: one query per row; batch per table (WHERE id = ANY(...))
+                    # when pending rows reach the thousands.
+                    for row in rows:
+                        _check_row(conn, row, now, connections)
+                if len(rows) < BATCH_SIZE:
+                    return
+                last = rows[-1]
+                after = (last["created_at"], last["action_id"])
+    finally:
+        for checked_db in connections.values():
+            checked_db.close()
 
 
-def _check_row(conn, row, now):
+def _check_row(conn, row, now, connections):
     entry = verilays.registry.get(row["action_type"])
     if row["check"] is None and entry is None:
         log.warning("action %s/%s skipped: type not registered",
@@ -87,7 +99,7 @@ def _check_row(conn, row, now):
     attempt = row["attempts"] + 1
     past_deadline = now >= row["deadline_at"]
     try:
-        verify = _verify_from_check(row) if row["check"] else entry["verify"]
+        verify = _verify_from_check(row, connections) if row["check"] else entry["verify"]
         res = verify(row["params"], row["result"], row)
         if not isinstance(res, CheckResult):
             raise TypeError(f"check returned {res!r}, not a CheckResult")

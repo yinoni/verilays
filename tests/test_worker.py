@@ -429,3 +429,43 @@ def test_two_workers_check_disjoint_rows(db):
     assert not set(checked["A"]) & set(checked["B"])
     statuses = {r["status"] for r in db.execute("SELECT status FROM verilays_actions")}
     assert statuses == {"verified"}
+
+
+def test_one_connection_per_database_per_pass(bookings, monkeypatch):
+    monkeypatch.setenv("VERILAYS_POSTGRES_BOOKINGS", DSN)
+    create_booking = postgres_tool()
+    for room in (1, 2, 3):
+        create_booking(room=room, start_time="10:00")
+
+    opened = []
+    real_connect = psycopg.connect
+
+    def counting_connect(*args, **kwargs):
+        opened.append(args[0])
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(psycopg, "connect", counting_connect)
+    run_once()
+
+    assert len(opened) == 2  # the store, and the bookings DB once for all 3 rows
+    statuses = [r["status"] for r in bookings.execute("SELECT status FROM verilays_actions")]
+    assert statuses == ["verified"] * 3
+
+
+def test_a_failed_query_does_not_break_the_next_check_on_the_same_database(bookings, monkeypatch):
+    monkeypatch.setenv("VERILAYS_POSTGRES_BOOKINGS", DSN)
+
+    @verilays.action.postgres("wrong_table", db="bookings", table="no_such_table",
+                              lookup_field="id", fields_to_compare=[])
+    def wrong_table():
+        return {"id": 1}
+
+    wrong_table()
+    postgres_tool()(room=4, start_time="10:00")
+
+    run_once()
+
+    rows = {r["action_type"]: r for r in bookings.execute("SELECT * FROM verilays_actions")}
+    assert rows["wrong_table"]["status"] == "pending"
+    assert "no_such_table" in rows["wrong_table"]["error"]
+    assert rows["create_booking"]["status"] == "verified"
