@@ -15,20 +15,27 @@ def init(dsn):
     store.create_table(dsn)
     _dsn = dsn
 
-def _record(type, system, arguments, result, status="pending", error=None):
+def _record(type, system, arguments, result, status="pending", error=None, check=None):
+    if _dsn is None:
+        log.warning("%s not recorded: verilays.init(dsn) was never called", type)
+        return
     try:
-        store.insert_action(_dsn, type, system, arguments, result, status=status, error=error)
+        store.insert_action(_dsn, type, system, arguments, result, status=status, error=error,
+                            check=check)
     except Exception as e:
         log.warning("insert record error: %s", e)
 
-def action(type, system, *, verify):
-    if not callable(verify):
-        raise TypeError(f"verify must be a function, got {verify!r}")
-    inspect.signature(verify).bind(None, None, None)  # the worker calls verify(params, result, row)
+def action(tool_name, system, *, verify=None, check=None):
+    """With check (saved in the row), the worker needs no app code; without it, verify is required."""
+    if check is None:
+        if not callable(verify):
+            raise TypeError(f"verify must be a function, got {verify!r}")
+        inspect.signature(verify).bind(None, None, None)  # the worker calls verify(params, result, row)
 
     def decorate(fn):
         sig = inspect.signature(fn)
-        registry[type] = {"system": system, "verify": verify}
+        if verify is not None:
+            registry[tool_name] = {"system": system, "verify": verify}
 
         if inspect.iscoroutinefunction(fn):
             @functools.wraps(fn)
@@ -38,9 +45,10 @@ def action(type, system, *, verify):
                 try:
                     result = await fn(*args, **kwargs)  # the only real difference: await
                 except Exception as e:
-                    _record(type, system, dict(bound.arguments), None, status="failed", error=repr(e))
+                    _record(tool_name, system, dict(bound.arguments), None, status="failed", error=repr(e),
+                            check=check)
                     raise
-                _record(type, system, dict(bound.arguments), result)
+                _record(tool_name, system, dict(bound.arguments), result, check=check)
                 return result
         else:
             @functools.wraps(fn)
@@ -50,11 +58,21 @@ def action(type, system, *, verify):
                 try:
                     result = fn(*args, **kwargs)
                 except Exception as e:
-                    _record(type, system, dict(bound.arguments), None, status="failed", error=repr(e))
+                    _record(tool_name, system, dict(bound.arguments), None, status="failed", error=repr(e),
+                            check=check)
                     raise
-                _record(type, system, dict(bound.arguments), result)
+                _record(tool_name, system, dict(bound.arguments), result, check=check)
                 return result
 
         return wrapper
 
     return decorate
+
+
+def _postgres(tool_name, db, table, lookup_field, fields_to_compare):
+    """The worker reads db's URL from VERILAYS_POSTGRES_<DB> and checks the row with pg_row_matches."""
+    return action(tool_name, "postgres", check={"db": db, "table": table, "lookup_field": lookup_field,
+                                           "fields_to_compare": fields_to_compare})
+
+
+action.postgres = _postgres

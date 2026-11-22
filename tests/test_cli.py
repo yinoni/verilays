@@ -1,3 +1,4 @@
+import signal
 import sys
 
 import pytest
@@ -5,6 +6,8 @@ from click.testing import CliRunner
 
 import verilays
 from tests.conftest import DSN
+from tests.test_worker import postgres_tool
+from verilays import cli
 from verilays.cli import main
 
 APP = f"""
@@ -13,7 +16,7 @@ from verilays.checks import CheckResult
 
 verilays.init({DSN!r})
 
-@verilays.action(type="ping", system="test", verify=lambda p, r, c: CheckResult.verified(seen=r))
+@verilays.action(tool_name="ping", system="test", verify=lambda p, r, c: CheckResult.verified(seen=r))
 def ping():
     return "pong"
 
@@ -51,14 +54,27 @@ def test_unknown_app_fails_with_a_clear_message(db, app_dir):
     assert "can't import --app no_such_app" in result.output
 
 
-def test_app_that_never_calls_init_fails_with_a_clear_message(db, app_dir, monkeypatch):
+def test_app_that_never_calls_init_and_no_dsn_env_fails_with_a_clear_message(db, app_dir, monkeypatch):
     monkeypatch.setattr(verilays, "_dsn", None)
+    monkeypatch.delenv("VERILAYS_DSN", raising=False)
     (app_dir / "cli_app_no_init.py").write_text("")
 
     result = worker("cli_app_no_init", "--once")
 
     assert result.exit_code != 0
-    assert "no DSN: cli_app_no_init must call verilays.init(dsn)" in result.output
+    assert "no DSN: set VERILAYS_DSN, or have --app call verilays.init(dsn)" in result.output
+
+
+def test_worker_without_app_reads_the_dsns_from_env_and_verifies(bookings, monkeypatch):
+    postgres_tool()(room=4, start_time="10:00")
+    monkeypatch.setattr(verilays, "_dsn", None)  # a fresh worker process: nothing called init
+    monkeypatch.setenv("VERILAYS_DSN", DSN)
+    monkeypatch.setenv("VERILAYS_POSTGRES_BOOKINGS", DSN)
+
+    result = CliRunner().invoke(main, ["worker", "--once"])
+
+    assert result.exit_code == 0, result.output
+    assert bookings.execute("SELECT status FROM verilays_actions").fetchone()["status"] == "verified"
 
 
 def test_without_once_fails_and_checks_nothing(db, app_dir):
@@ -69,3 +85,44 @@ def test_without_once_fails_and_checks_nothing(db, app_dir):
     assert result.exit_code != 0
     assert "pass --once" in result.output
     assert db.execute("SELECT count(*) AS n FROM verilays_actions").fetchone()["n"] == 0
+
+
+def test_once_and_every_together_fail(db):
+    result = CliRunner().invoke(main, ["worker", "--once", "--every", "1"])
+
+    assert result.exit_code != 0
+    assert "not both" in result.output
+
+
+
+def test_every_runs_the_loop_and_sigterm_stops_it(db, monkeypatch):
+    calls = []
+
+    def fake_run_every(seconds, stop):
+        calls.append(seconds)
+        signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)  # what docker stop triggers
+        assert stop.is_set()
+
+    monkeypatch.setattr(cli, "run_every", fake_run_every)
+    default_sigterm = signal.getsignal(signal.SIGTERM)
+    try:
+        result = CliRunner().invoke(main, ["worker", "--every", "5"])
+    finally:
+        signal.signal(signal.SIGTERM, default_sigterm)
+
+    assert result.exit_code == 0, result.output
+    assert calls == [5.0]
+
+
+def test_worker_start_retries_check_errors_after_the_config_is_fixed(bookings, monkeypatch):
+    monkeypatch.delenv("VERILAYS_POSTGRES_BOOKINGS", raising=False)
+    postgres_tool()(room=4, start_time="10:00")
+    CliRunner().invoke(main, ["worker", "--once"])
+    assert bookings.execute("SELECT status FROM verilays_actions").fetchone()["status"] == "check_error"
+
+    monkeypatch.setenv("VERILAYS_POSTGRES_BOOKINGS", DSN)  # the fix, then a restart
+    result = CliRunner().invoke(main, ["worker", "--once"])
+
+    assert result.exit_code == 0, result.output
+    row = bookings.execute("SELECT status, error FROM verilays_actions").fetchone()
+    assert row == {"status": "verified", "error": None}

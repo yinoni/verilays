@@ -22,16 +22,16 @@ def test_init_creates_table_with_every_spec_column_and_is_idempotent(db):
     }
     assert set(columns) == {
         "action_id", "run_id", "action_type", "system", "entity_key", "params", "result",
-        "error", "status", "evidence", "duplicate_of", "attempts", "next_check_at",
+        "error", "status", "evidence", "check", "duplicate_of", "attempts", "next_check_at",
         "deadline_at", "created_at", "updated_at",
     }
-    assert columns["run_id"] == columns["duplicate_of"] == "YES"
+    assert columns["run_id"] == columns["duplicate_of"] == columns["check"] == "YES"
 
 
 def test_wrapped_tool_returns_result_unchanged_and_records_one_pending_row(db):
     returned = {"id": 42, "start": datetime.time(10, 0)}
 
-    @verilays.action(type="create_booking", system="postgres:bookings", verify=never_checked)
+    @verilays.action(tool_name="create_booking", system="postgres:bookings", verify=never_checked)
     def create_booking(book_id, start_time, room="A"):
         return returned
 
@@ -49,7 +49,7 @@ def test_wrapped_tool_returns_result_unchanged_and_records_one_pending_row(db):
 
 
 def test_each_call_inserts_its_own_row(db):
-    @verilays.action(type="ping", system="test", verify=never_checked)
+    @verilays.action(tool_name="ping", system="test", verify=never_checked)
     def ping():
         return None
 
@@ -60,22 +60,22 @@ def test_each_call_inserts_its_own_row(db):
 
 def test_verify_is_required():
     with pytest.raises(TypeError, match="verify"):
-        verilays.action(type="create_booking", system="postgres:bookings")
+        verilays.action(tool_name="create_booking", system="postgres:bookings")
 
 
 def test_verify_that_is_not_a_function_fails_at_import():
     with pytest.raises(TypeError, match="verify must be a function"):
-        verilays.action(type="create_booking", system="postgres:bookings", verify="oops")
+        verilays.action(tool_name="create_booking", system="postgres:bookings", verify="oops")
 
 
 def test_verify_that_cannot_take_params_result_row_fails_at_import():
     with pytest.raises(TypeError):
-        verilays.action(type="create_booking", system="postgres:bookings",
+        verilays.action(tool_name="create_booking", system="postgres:bookings",
                         verify=lambda params, result: None)
 
 
 def test_tool_that_raises_reraises_the_same_error_and_records_a_failed_row(db):
-    @verilays.action(type="create_booking", system="test", verify=never_checked)
+    @verilays.action(tool_name="create_booking", system="test", verify=never_checked)
     def create_booking(room):
         raise ValueError(f"room {room} taken")
 
@@ -89,7 +89,7 @@ def test_tool_that_raises_reraises_the_same_error_and_records_a_failed_row(db):
 
 
 def test_async_tool_returns_its_result_and_records_a_pending_row(db):
-    @verilays.action(type="create_booking", system="test", verify=never_checked)
+    @verilays.action(tool_name="create_booking", system="test", verify=never_checked)
     async def create_booking(room, n=1):
         return {"room": room}
 
@@ -101,7 +101,7 @@ def test_async_tool_returns_its_result_and_records_a_pending_row(db):
 
 
 def test_async_tool_that_raises_reraises_the_same_error_and_records_a_failed_row(db):
-    @verilays.action(type="create_booking", system="test", verify=never_checked)
+    @verilays.action(tool_name="create_booking", system="test", verify=never_checked)
     async def create_booking(room):
         raise ValueError(f"room {room} taken")
 
@@ -116,14 +116,41 @@ def test_async_tool_that_raises_reraises_the_same_error_and_records_a_failed_row
 def test_store_down_tool_still_returns_and_a_warning_is_logged(monkeypatch, caplog):
     monkeypatch.setattr(verilays, "_dsn", "postgresql://x@localhost:1/x")  # closed port
 
-    @verilays.action(type="create_booking", system="test", verify=never_checked)
+    @verilays.action(tool_name="create_booking", system="test", verify=never_checked)
     def create_booking(room):
         return {"room": room}
 
-    @verilays.action(type="create_booking_async", system="test", verify=never_checked)
+    @verilays.action(tool_name="create_booking_async", system="test", verify=never_checked)
     async def create_booking_async(room):
         return {"room": room}
 
     assert create_booking(7) == {"room": 7}
     assert asyncio.run(create_booking_async(8)) == {"room": 8}
     assert caplog.text.count("insert record error") == 2
+
+
+def test_action_postgres_saves_its_check_in_the_row_and_needs_no_verify(db):
+    @verilays.action.postgres("create_booking", db="bookings", table="bookings",
+                              lookup_field="id", fields_to_compare=["room", "start_time"])
+    def create_booking(room, start_time):
+        return {"id": 1}
+
+    assert create_booking(4, "10:00") == {"id": 1}
+
+    row = db.execute("SELECT * FROM verilays_actions").fetchone()
+    assert row["system"] == "postgres"
+    assert row["check"] == {"db": "bookings", "table": "bookings", "lookup_field": "id",
+                            "fields_to_compare": ["room", "start_time"]}
+    assert verilays.registry == {}
+
+
+def test_tool_called_before_init_still_returns_and_warns_clearly(monkeypatch, caplog):
+    monkeypatch.setattr(verilays, "_dsn", None)
+
+    @verilays.action.postgres("create_booking", db="bookings", table="bookings",
+                              lookup_field="id", fields_to_compare=[])
+    def create_booking(room):
+        return {"id": 1}
+
+    assert create_booking(4) == {"id": 1}
+    assert "create_booking not recorded: verilays.init(dsn) was never called" in caplog.text

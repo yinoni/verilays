@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS verilays_actions (
     error text,
     status text NOT NULL,
     evidence jsonb,
+    "check" jsonb,
     duplicate_of uuid,
     attempts int NOT NULL DEFAULT 0,
     next_check_at timestamptz,
@@ -34,13 +35,15 @@ def create_table(dsn):
         conn.execute(CREATE_TABLE)
 
 
-def insert_action(dsn, action_type, system, params, result, status="pending", error=None):
+def insert_action(dsn, action_type, system, params, result, status="pending", error=None,
+                  check=None):
     # shortcut: fixed 24h deadline and an immediate first check; #3 makes them configurable.
     # shortcut: one connection per call; add a pool if tool-call latency shows it.
     with psycopg.connect(dsn) as conn:
         conn.execute(
             """INSERT INTO verilays_actions
-               (action_type, system, params, result, status, next_check_at, deadline_at, error)
-               VALUES (%s, %s, %s, %s, %s, now(), now() + interval '24 hours', %s)""",
-            (action_type, system, _jsonb(params), _jsonb(result), status, error),
+               (action_type, system, params, result, status, next_check_at, deadline_at, error, "check")
+               VALUES (%s, %s, %s, %s, %s, now(), now() + interval '24 hours', %s, %s)""",
+            (action_type, system, _jsonb(params), _jsonb(result), status, error,
+             _jsonb(check) if check else None),
         )

@@ -7,3 +7,28 @@ services:
       POSTGRES_DB: verilays
     # 5432x is taken by local Supabase
     ports: ["55432:5432"]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "verilays"]
+      interval: 2s
+
+  postgres-main:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin
+      POSTGRES_DB: bookings
+    # 5432x is taken by local Supabase
+    ports: ["55433:5432"]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "admin", "-d", "bookings"]
+      interval: 2s
+
+  verilays-worker:
+    build: .
+    command: verilays worker --every 10
+    environment:
+      VERILAYS_DSN: postgresql://verilays:verilays@postgres:5432/verilays
+      VERILAYS_POSTGRES_BOOKINGS: postgresql://admin:admin@postgres-main:5432/bookings
+    depends_on:
+      postgres: {condition: service_healthy}
+      postgres-main: {condition: service_healthy}
