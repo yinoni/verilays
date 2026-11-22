@@ -1,3 +1,4 @@
+import datetime
 import json
 from functools import partial
 
@@ -35,15 +36,14 @@ def create_table(dsn):
         conn.execute(CREATE_TABLE)
 
 
-def insert_action(dsn, action_type, system, params, result, status="pending", error=None,
-                  check=None):
-    # shortcut: fixed 24h deadline and an immediate first check; #3 makes them configurable.
+def insert_action(dsn, action_type, system, params, result, deadline=datetime.timedelta(minutes=1),
+                  status="pending", error=None, check=None):
     # shortcut: one connection per call; add a pool if tool-call latency shows it.
     with psycopg.connect(dsn) as conn:
         conn.execute(
             """INSERT INTO verilays_actions
                (action_type, system, params, result, status, next_check_at, deadline_at, error, "check")
-               VALUES (%s, %s, %s, %s, %s, now(), now() + interval '24 hours', %s, %s)""",
-            (action_type, system, _jsonb(params), _jsonb(result), status, error,
+               VALUES (%s, %s, %s, %s, %s, now(), now() + %s, %s, %s)""",
+            (action_type, system, _jsonb(params), _jsonb(result), status, deadline, error,
              _jsonb(check) if check else None),
         )

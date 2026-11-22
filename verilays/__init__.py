@@ -28,13 +28,13 @@ def init(dsn):
     store.create_table(dsn)
     _dsn = dsn
 
-def _record(type, system, arguments, result, status="pending", error=None, check=None):
+def _record(type, system, arguments, result, deadline, status="pending", error=None, check=None):
     if _dsn is None:
         log.warning("%s not recorded: verilays.init(dsn) was never called", type)
         return
     try:
-        store.insert_action(_dsn, type, system, arguments, result, status=status, error=error,
-                            check=check)
+        store.insert_action(_dsn, type, system, arguments, result, deadline, status=status,
+                            error=error, check=check)
     except Exception as e:
         log.warning("insert record error: %s", e)
 
@@ -62,10 +62,10 @@ def action(tool_name, system, *, verify=None, check=None, deadline="1m"):
                 try:
                     result = await fn(*args, **kwargs)  # the only real difference: await
                 except Exception as e:
-                    _record(tool_name, system, dict(bound.arguments), None, status="failed", error=repr(e),
+                    _record(tool_name, system, dict(bound.arguments), None, deadline, status="failed", error=repr(e),
                             check=check)
                     raise
-                _record(tool_name, system, dict(bound.arguments), result, check=check)
+                _record(tool_name, system, dict(bound.arguments), result, deadline, check=check)
                 return result
         else:
             @functools.wraps(fn)
@@ -75,10 +75,10 @@ def action(tool_name, system, *, verify=None, check=None, deadline="1m"):
                 try:
                     result = fn(*args, **kwargs)
                 except Exception as e:
-                    _record(tool_name, system, dict(bound.arguments), None, status="failed", error=repr(e),
+                    _record(tool_name, system, dict(bound.arguments), None, deadline, status="failed", error=repr(e),
                             check=check)
                     raise
-                _record(tool_name, system, dict(bound.arguments), result, check=check)
+                _record(tool_name, system, dict(bound.arguments), result, deadline, check=check)
                 return result
 
         return wrapper

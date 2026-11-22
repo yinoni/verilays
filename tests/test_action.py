@@ -170,3 +170,23 @@ def test_bad_deadline_is_rejected_when_the_tool_is_decorated(bad):
     with pytest.raises(ValueError, match="deadline must look like '10s', '5m' or '1h'"):
         verilays.action.postgres("create_booking", db="bookings", table="bookings",
                                  lookup_field="id", fields_to_compare=["room"], deadline=bad)
+
+
+def test_deadline_is_stored_in_deadline_at_default_1m(db):
+    @verilays.action(tool_name="ping", system="test", verify=never_checked)
+    def ping():
+        return None
+
+    @verilays.action.postgres("slow_sync", db="crm", table="contacts", lookup_field="id",
+                              fields_to_compare=[], deadline="1h")
+    def slow_sync():
+        return {"id": 1}
+
+    ping()
+    slow_sync()
+
+    waits = {
+        r["action_type"]: r["wait"]
+        for r in db.execute("SELECT action_type, deadline_at - created_at AS wait FROM verilays_actions")
+    }
+    assert waits == {"ping": datetime.timedelta(minutes=1), "slow_sync": datetime.timedelta(hours=1)}
