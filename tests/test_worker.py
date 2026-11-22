@@ -1,5 +1,6 @@
 import datetime
 import logging
+import threading
 
 import psycopg
 import pytest
@@ -8,7 +9,8 @@ import verilays
 from tests.conftest import DSN
 from verilays import recipes, store
 from verilays.checks import CheckResult
-from verilays.worker import run_once
+from verilays import worker
+from verilays.worker import run_every, run_once
 
 
 def bookings_conn():
@@ -19,7 +21,7 @@ def book_tool(writes=True, returns_dict=True):
     """A create_booking tool that claims success; with writes=False it never saves."""
 
     @verilays.action(
-        type="create_booking",
+        tool_name="create_booking",
         system="postgres:bookings",
         verify=recipes.pg_row_matches(
             connect=bookings_conn,
@@ -78,14 +80,14 @@ def test_booking_never_saved_stays_pending_and_is_retried(bookings, caplog):
     assert "→ pending (check not_found, attempt 2)" in caplog.text
 
 
-def test_wrong_value_stays_pending_with_a_field_diff(bookings):
+def test_wrong_value_is_a_mismatch_with_a_field_diff(bookings):
     book_tool()(room=4, start_time="10:00")
     bookings.execute("UPDATE bookings SET start_time = '11:00'")
 
     run_once()
 
     row = only_row(bookings)
-    assert row["status"] == "pending"
+    assert row["status"] == "mismatch"
     assert row["evidence"]["diff"] == {
         "start_time": {"expected": "10:00", "got": "11:00:00"}
     }
@@ -93,7 +95,7 @@ def test_wrong_value_stays_pending_with_a_field_diff(bookings):
 
 def test_two_matching_rows_are_ambiguous_and_stay_pending(bookings, caplog):
     @verilays.action(
-        type="book_room",
+        tool_name="book_room",
         system="postgres:bookings",
         verify=recipes.pg_row_matches(bookings_conn, "bookings", lookup_field="room", fields_to_compare=[]),
     )
@@ -117,7 +119,7 @@ def test_custom_check_gets_params_result_and_the_action_row(db):
         seen.update(params=params, result=result, type=ctx["action_type"])
         return CheckResult.verified(source="crm")
 
-    @verilays.action(type="send_email", system="crm", verify=check)
+    @verilays.action(tool_name="send_email", system="crm", verify=check)
     def send_email(to):
         return {"msg_id": "m1"}
 
@@ -134,11 +136,11 @@ def test_check_that_raises_stays_pending_and_the_next_action_still_runs(db, capl
     def broken(params, result, ctx):
         raise ConnectionError("crm is down")
 
-    @verilays.action(type="broken", system="crm", verify=broken)
+    @verilays.action(tool_name="broken", system="crm", verify=broken)
     def first():
         return None
 
-    @verilays.action(type="fine", system="crm", verify=lambda p, r, c: CheckResult.verified())
+    @verilays.action(tool_name="fine", system="crm", verify=lambda p, r, c: CheckResult.verified())
     def second():
         return None
 
@@ -168,11 +170,11 @@ def test_unregistered_type_is_skipped_and_logged(db, caplog):
 
 
 def test_check_returning_a_non_checkresult_stays_pending_and_the_next_action_still_runs(db, caplog):
-    @verilays.action(type="sloppy", system="crm", verify=lambda p, r, c: True)
+    @verilays.action(tool_name="sloppy", system="crm", verify=lambda p, r, c: True)
     def first():
         return None
 
-    @verilays.action(type="fine", system="crm", verify=lambda p, r, c: CheckResult.verified())
+    @verilays.action(tool_name="fine", system="crm", verify=lambda p, r, c: CheckResult.verified())
     def second():
         return None
 
@@ -217,7 +219,7 @@ def postgres_tool():
 
 
 def test_action_postgres_is_verified_with_only_the_db_env_var(bookings, monkeypatch):
-    monkeypatch.setenv("VERILAYS_DB_BOOKINGS", DSN)
+    monkeypatch.setenv("VERILAYS_POSTGRES_BOOKINGS", DSN)
     postgres_tool()(room=4, start_time="10:00")
 
     run_once()
@@ -227,25 +229,45 @@ def test_action_postgres_is_verified_with_only_the_db_env_var(bookings, monkeypa
     assert row["evidence"] == {"key": {"id": 1}, "row": {"room": "4", "start_time": "10:00:00"}}
 
 
-def test_action_postgres_without_the_db_env_var_stays_pending_with_a_clear_warning(
-        bookings, monkeypatch, caplog):
-    monkeypatch.delenv("VERILAYS_DB_BOOKINGS", raising=False)
+def test_missing_db_env_var_is_a_check_error_and_is_not_retried(bookings, monkeypatch, caplog):
+    monkeypatch.delenv("VERILAYS_POSTGRES_BOOKINGS", raising=False)
     postgres_tool()(room=4, start_time="10:00")
 
     run_once()
+    run_once()
 
     row = only_row(bookings)
-    assert row["status"] == "pending"
+    assert row["status"] == "check_error"
     assert row["attempts"] == 1
-    assert "VERILAYS_DB_BOOKINGS is not set" in caplog.text
+    assert row["error"] == ("VERILAYS_POSTGRES_BOOKINGS is not set; "
+                            "set it to the URL of the 'bookings' database")
+    assert "→ check_error" in caplog.text
 
 
-def test_check_for_an_unknown_system_stays_pending_with_a_clear_warning(db, caplog):
+def test_check_for_an_unknown_system_is_a_check_error(db, caplog):
     store.insert_action(DSN, "charge", "stripe", {}, None, check={"amount": 5})
 
     run_once()
 
     row = only_row(db)
-    assert row["status"] == "pending"
-    assert row["attempts"] == 1
-    assert "unknown system 'stripe'; known: postgres" in caplog.text
+    assert row["status"] == "check_error"
+    assert row["error"] == "unknown system 'stripe'; known: postgres"
+
+
+def test_run_every_keeps_going_after_a_failed_pass_until_stopped(monkeypatch, caplog):
+    stop = threading.Event()
+    passes = []
+
+    def fake_run_once():
+        passes.append(1)
+        if len(passes) == 1:
+            raise ConnectionError("store is down")
+        stop.set()
+
+    monkeypatch.setattr(worker, "run_once", fake_run_once)
+
+    run_every(0.01, stop)
+
+    assert len(passes) == 2
+    assert "check pass failed" in caplog.text
+    assert "store is down" in caplog.text
