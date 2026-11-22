@@ -45,7 +45,11 @@ def _verify_from_check(row):
 
 
 def run_once(now=None):
-    """Check every pending action once; a verified check marks it verified."""
+    """Check every pending action once.
+
+    Found → verified or mismatch. Not found → stays pending until deadline_at, then missing.
+    A check that raises keeps it pending until deadline_at, then expired.
+    """
     now = now or datetime.datetime.now(datetime.timezone.utc)
     with psycopg.connect(verilays._dsn, row_factory=dict_row) as conn:
         # shortcut: every pending row is due on every run; #3 adds next_check_at scheduling.
@@ -62,6 +66,7 @@ def run_once(now=None):
                 continue
 
             attempt = row["attempts"] + 1
+            past_deadline = now >= row["deadline_at"]
             try:
                 verify = _verify_from_check(row) if row["check"] else entry["verify"]
                 res = verify(row["params"], row["result"], row)
@@ -76,17 +81,25 @@ def run_once(now=None):
                     (str(e), attempt, now, row["action_id"]),
                 )
                 continue
-            except Exception:
-                log.warning("action %s/%s check raised, stays pending (attempt %d)",
-                            row["action_id"], row["action_type"], attempt, exc_info=True)
+            except Exception as e:
+                # We never found out, so this is expired, not missing: don't blame the agent.
+                status = "expired" if past_deadline else "pending"
+                log.warning("action %s/%s check raised → %s (attempt %d)",
+                            row["action_id"], row["action_type"], status, attempt, exc_info=True)
                 conn.execute(
-                    "UPDATE verilays_actions SET attempts = %s, updated_at = %s WHERE action_id = %s",
-                    (attempt, now, row["action_id"]),
+                    "UPDATE verilays_actions SET status = %s, error = %s, attempts = %s, updated_at = %s"
+                    " WHERE action_id = %s",
+                    (status, repr(e), attempt, now, row["action_id"]),
                 )
                 continue
 
-            # shortcut: not_found/ambiguous stay pending and are retried; #5 adds those transitions.
-            status = res.status if res.status in ("verified", "mismatch") else "pending"
+            if res.status in ("verified", "mismatch"):
+                status = res.status
+            elif res.status == "not_found" and past_deadline:
+                status = "missing"
+            else:
+                # shortcut: ambiguous stays pending even after the deadline; #5 gives it a verdict.
+                status = "pending"
             conn.execute(
                 "UPDATE verilays_actions SET status = %s, evidence = %s, attempts = %s,"
                 " updated_at = %s WHERE action_id = %s",

@@ -271,3 +271,107 @@ def test_run_every_keeps_going_after_a_failed_pass_until_stopped(monkeypatch, ca
     assert len(passes) == 2
     assert "check pass failed" in caplog.text
     assert "store is down" in caplog.text
+
+
+SECOND = datetime.timedelta(seconds=1)
+
+
+def test_silent_no_op_is_pending_before_the_deadline_and_missing_after(bookings, caplog):
+    book_tool(writes=False)(room=4, start_time="10:00")  # says {"id": 999}, wrote nothing
+    deadline = only_row(bookings)["deadline_at"]
+
+    run_once(now=deadline - SECOND)
+    assert only_row(bookings)["status"] == "pending"
+
+    with caplog.at_level(logging.INFO, logger="verilays"):
+        run_once(now=deadline)
+
+    row = only_row(bookings)
+    assert row["status"] == "missing"
+    assert row["evidence"] == {"key": {"id": 999}}
+    assert "→ missing (check not_found, attempt 2)" in caplog.text
+
+
+def test_late_write_before_the_deadline_is_verified(bookings):
+    book_tool(writes=False)(room=4, start_time="10:00")
+    deadline = only_row(bookings)["deadline_at"]
+
+    run_once(now=deadline - 30 * SECOND)
+    bookings.execute("INSERT INTO bookings (id, room, start_time) VALUES (999, 4, '10:00')")
+    run_once(now=deadline - 20 * SECOND)
+
+    assert only_row(bookings)["status"] == "verified"
+
+
+def test_check_that_always_raises_is_expired_after_the_deadline_never_missing(db):
+    def broken(params, result, ctx):
+        raise ConnectionError("crm is down")
+
+    @verilays.action(tool_name="broken", system="crm", verify=broken)
+    def send():
+        return None
+
+    send()
+    deadline = only_row(db)["deadline_at"]
+
+    run_once(now=deadline - SECOND)
+    assert only_row(db)["status"] == "pending"
+
+    run_once(now=deadline)
+    row = only_row(db)
+    assert row["status"] == "expired"
+    assert row["error"] == "ConnectionError('crm is down')"
+
+
+def test_check_error_does_not_expire(bookings, monkeypatch):
+    monkeypatch.delenv("VERILAYS_POSTGRES_BOOKINGS", raising=False)
+    postgres_tool()(room=4, start_time="10:00")
+    deadline = only_row(bookings)["deadline_at"]
+
+    run_once(now=deadline - SECOND)
+    run_once(now=deadline + datetime.timedelta(hours=1))
+
+    assert only_row(bookings)["status"] == "check_error"
+
+
+def test_failed_tool_stays_failed_after_the_deadline(bookings):
+    @verilays.action(tool_name="create_booking", system="crm", verify=lambda p, r, c: CheckResult.verified())
+    def create_booking():
+        raise RuntimeError("api down")
+
+    with pytest.raises(RuntimeError):
+        create_booking()
+    deadline = only_row(bookings)["deadline_at"]
+
+    run_once(now=deadline)
+
+    assert only_row(bookings)["status"] == "failed"
+
+
+def test_final_verdicts_never_change(bookings):
+    statuses = {"room 1": "verified", "room 2": "mismatch", "room 3": "missing", "room 4": "expired"}
+    book_tool()(room=1, start_time="10:00")                 # verified
+    book_tool()(room=2, start_time="10:00")                 # mismatch below
+    book_tool(writes=False)(room=3, start_time="10:00")     # says id 999, missing
+    bookings.execute("UPDATE bookings SET start_time = '11:00' WHERE room = 2")
+
+    @verilays.action(tool_name="notify", system="crm", verify=lambda p, r, c: 1 / 0)
+    def broken(room):
+        return None
+
+    broken(room=4)                                          # check raises, expired
+    deadline = max(r["deadline_at"] for r in bookings.execute("SELECT deadline_at FROM verilays_actions"))
+    run_once(now=deadline)
+
+    def by_room():
+        return {f"room {r['params']['room']}": r["status"]
+                for r in bookings.execute("SELECT params, status FROM verilays_actions")}
+
+    assert by_room() == statuses
+
+    # Everything that made those verdicts is now fixed; a later pass must not touch them.
+    bookings.execute("UPDATE bookings SET start_time = '10:00' WHERE room = 2")
+    bookings.execute("INSERT INTO bookings (id, room, start_time) VALUES (999, 3, '10:00')")
+    run_once(now=deadline + datetime.timedelta(hours=1))
+
+    assert by_room() == statuses
