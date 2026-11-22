@@ -1,6 +1,7 @@
 import datetime
 import logging
 import os
+import uuid
 
 import psycopg
 from psycopg.rows import dict_row
@@ -44,70 +45,88 @@ def _verify_from_check(row):
     return fn(row["check"])
 
 
+BATCH_SIZE = 100
+
+
 def run_once(now=None):
-    """Check every pending action once.
+    """Check every pending action once, in batches of BATCH_SIZE, one transaction per batch.
 
     Found → verified or mismatch. Not found → stays pending until deadline_at, then missing.
     A check that raises keeps it pending until deadline_at, then expired.
     """
     now = now or datetime.datetime.now(datetime.timezone.utc)
+    # A row that stays pending must not come back in this pass, so each batch starts after the last one.
+    after = (datetime.datetime.min.replace(tzinfo=datetime.timezone.utc), uuid.UUID(int=0))
     with psycopg.connect(verilays._dsn, row_factory=dict_row) as conn:
-        # shortcut: every pending row is due on every run; #3 adds next_check_at scheduling.
-        # The row locks are held until all checks finish, so a second worker skips these rows.
-        rows = conn.execute(
-            "SELECT * FROM verilays_actions WHERE status = 'pending'"
-            " ORDER BY created_at FOR UPDATE SKIP LOCKED"
-        ).fetchall()
-        for row in rows:
-            entry = verilays.registry.get(row["action_type"])
-            if row["check"] is None and entry is None:
-                log.warning("action %s/%s skipped: type not registered",
-                            row["action_id"], row["action_type"])
-                continue
+        while True:
+            # The row locks are held until the batch commits, so a second worker skips these rows.
+            with conn.transaction():
+                rows = conn.execute(
+                    "SELECT * FROM verilays_actions WHERE status = 'pending'"
+                    " AND (created_at, action_id) > (%s, %s)"
+                    " ORDER BY created_at, action_id LIMIT %s FOR UPDATE SKIP LOCKED",
+                    (*after, BATCH_SIZE),
+                ).fetchall()
+                # shortcut: one query and one connection per row; batch per table
+                # (WHERE id = ANY(...)) when pending rows reach the thousands.
+                for row in rows:
+                    _check_row(conn, row, now)
+            if len(rows) < BATCH_SIZE:
+                return
+            last = rows[-1]
+            after = (last["created_at"], last["action_id"])
 
-            attempt = row["attempts"] + 1
-            past_deadline = now >= row["deadline_at"]
-            try:
-                verify = _verify_from_check(row) if row["check"] else entry["verify"]
-                res = verify(row["params"], row["result"], row)
-                if not isinstance(res, CheckResult):
-                    raise TypeError(f"check returned {res!r}, not a CheckResult")
-            except ConfigError as e:
-                log.warning("action %s/%s → check_error: %s (fix the worker's config and restart it)",
-                            row["action_id"], row["action_type"], e)
-                conn.execute(
-                    "UPDATE verilays_actions SET status = 'check_error', error = %s, attempts = %s,"
-                    " updated_at = %s WHERE action_id = %s",
-                    (str(e), attempt, now, row["action_id"]),
-                )
-                continue
-            except Exception as e:
-                # We never found out, so this is expired, not missing: don't blame the agent.
-                status = "expired" if past_deadline else "pending"
-                log.warning("action %s/%s check raised → %s (attempt %d)",
-                            row["action_id"], row["action_type"], status, attempt, exc_info=True)
-                conn.execute(
-                    "UPDATE verilays_actions SET status = %s, error = %s, attempts = %s, updated_at = %s"
-                    " WHERE action_id = %s",
-                    (status, repr(e), attempt, now, row["action_id"]),
-                )
-                continue
 
-            if res.status in ("verified", "mismatch"):
-                status = res.status
-            elif res.status == "not_found" and past_deadline:
-                status = "missing"
-            else:
-                # shortcut: ambiguous stays pending even after the deadline; #5 gives it a verdict.
-                status = "pending"
-            conn.execute(
-                "UPDATE verilays_actions SET status = %s, evidence = %s, attempts = %s,"
-                " updated_at = %s WHERE action_id = %s",
-                (status, _jsonb(res.evidence), attempt, now, row["action_id"]),
-            )
-            log.info("action %s/%s → %s (check %s, attempt %d) evidence=%s",
-                     row["action_id"], row["action_type"], status, res.status, attempt,
-                     res.evidence)
+def _check_row(conn, row, now):
+    entry = verilays.registry.get(row["action_type"])
+    if row["check"] is None and entry is None:
+        log.warning("action %s/%s skipped: type not registered",
+                    row["action_id"], row["action_type"])
+        return
+
+    attempt = row["attempts"] + 1
+    past_deadline = now >= row["deadline_at"]
+    try:
+        verify = _verify_from_check(row) if row["check"] else entry["verify"]
+        res = verify(row["params"], row["result"], row)
+        if not isinstance(res, CheckResult):
+            raise TypeError(f"check returned {res!r}, not a CheckResult")
+    except ConfigError as e:
+        log.warning("action %s/%s → check_error: %s (fix the worker's config and restart it)",
+                    row["action_id"], row["action_type"], e)
+        conn.execute(
+            "UPDATE verilays_actions SET status = 'check_error', error = %s, attempts = %s,"
+            " updated_at = %s WHERE action_id = %s",
+            (str(e), attempt, now, row["action_id"]),
+        )
+        return
+    except Exception as e:
+        # We never found out, so this is expired, not missing: don't blame the agent.
+        status = "expired" if past_deadline else "pending"
+        log.warning("action %s/%s check raised → %s (attempt %d)",
+                    row["action_id"], row["action_type"], status, attempt, exc_info=True)
+        conn.execute(
+            "UPDATE verilays_actions SET status = %s, error = %s, attempts = %s, updated_at = %s"
+            " WHERE action_id = %s",
+            (status, repr(e), attempt, now, row["action_id"]),
+        )
+        return
+
+    if res.status in ("verified", "mismatch"):
+        status = res.status
+    elif res.status == "not_found" and past_deadline:
+        status = "missing"
+    else:
+        # shortcut: ambiguous stays pending even after the deadline; #5 gives it a verdict.
+        status = "pending"
+    conn.execute(
+        "UPDATE verilays_actions SET status = %s, evidence = %s, attempts = %s,"
+        " updated_at = %s WHERE action_id = %s",
+        (status, _jsonb(res.evidence), attempt, now, row["action_id"]),
+    )
+    log.info("action %s/%s → %s (check %s, attempt %d) evidence=%s",
+             row["action_id"], row["action_type"], status, res.status, attempt,
+             res.evidence)
 
 
 def retry_check_errors():

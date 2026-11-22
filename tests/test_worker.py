@@ -375,3 +375,57 @@ def test_final_verdicts_never_change(bookings):
     run_once(now=deadline + datetime.timedelta(hours=1))
 
     assert by_room() == statuses
+
+
+def many_pings(db, count, verify):
+    """Registers a ping tool and inserts `count` pending pings straight into the store."""
+    @verilays.action(tool_name="ping", system="test", verify=verify)
+    def ping():
+        return None
+
+    db.execute(
+        "INSERT INTO verilays_actions (action_type, system, params, status, deadline_at)"
+        " SELECT 'ping', 'test', '{}', 'pending', now() + interval '1 minute' FROM generate_series(1, %s)",
+        (count,),
+    )
+
+
+def test_one_pass_checks_every_row_across_several_batches(db):
+    many_pings(db, 250, verify=lambda p, r, c: CheckResult.not_found())  # all stay pending
+
+    run_once()
+
+    attempts = [r["attempts"] for r in db.execute("SELECT attempts FROM verilays_actions")]
+    assert attempts == [1] * 250  # every row once, none twice
+
+
+def test_two_workers_check_disjoint_rows(db):
+    checked = {"A": [], "B": []}
+    a_holds_its_batch = threading.Event()
+    b_done = threading.Event()
+
+    def verify(params, result, row):
+        worker_name = threading.current_thread().name
+        checked[worker_name].append(row["action_id"])
+        if worker_name == "A" and not b_done.is_set():
+            a_holds_its_batch.set()  # A has locked its first 100 rows
+            b_done.wait(5)
+        return CheckResult.verified()
+
+    many_pings(db, 150, verify)
+    a = threading.Thread(target=run_once, name="A")
+    a.start()
+    a_holds_its_batch.wait(5)
+    b = threading.Thread(target=run_once, name="B")
+    b.start()
+    b.join(5)
+    b_finished_while_a_held_its_rows = not b.is_alive()
+    b_done.set()
+    a.join(5)
+
+    assert b_finished_while_a_held_its_rows  # B skipped A's locked rows instead of waiting
+    assert len(checked["A"]) == 100
+    assert len(checked["B"]) == 50
+    assert not set(checked["A"]) & set(checked["B"])
+    statuses = {r["status"] for r in db.execute("SELECT status FROM verilays_actions")}
+    assert statuses == {"verified"}
