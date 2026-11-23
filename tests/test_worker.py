@@ -1,6 +1,7 @@
 import datetime
 import logging
 import threading
+import time
 import types
 
 import psycopg
@@ -529,3 +530,48 @@ def test_each_batch_commits_before_the_next_one_starts(db):
     run_once()
 
     assert verified_when_batch_2_started == [100]
+
+
+def test_a_hanging_query_times_out_and_the_rest_of_that_database_waits_for_the_next_pass(
+        bookings, monkeypatch):
+    monkeypatch.setenv("VERILAYS_POSTGRES_BOOKINGS", DSN)
+    monkeypatch.setattr(worker, "CHECK_TIMEOUT_SECONDS", 1)
+    create_booking = postgres_tool()
+    create_booking(room=1, start_time="10:00")
+    create_booking(room=2, start_time="10:00")
+
+    with psycopg.connect(DSN) as migration:
+        migration.execute("LOCK TABLE bookings IN ACCESS EXCLUSIVE MODE")  # every SELECT on it waits
+        # If the worker had no timeout it would wait for this lock; release it after 10s so the
+        # test fails on the asserts instead of hanging.
+        safety_release = threading.Timer(10, migration.rollback)
+        safety_release.start()
+        run_once()
+        safety_release.cancel()
+        migration.rollback()
+
+    rows = {r["params"]["room"]: r for r in bookings.execute("SELECT * FROM verilays_actions")}
+    assert rows[1]["status"] == "pending"
+    assert "statement timeout" in rows[1]["error"]
+    assert rows[2]["attempts"] == 0  # not tried: its database already timed out in this pass
+
+    run_once()  # the lock is gone
+
+    statuses = [r["status"] for r in bookings.execute("SELECT status FROM verilays_actions")]
+    assert statuses == ["verified", "verified"]
+
+
+def test_a_database_that_never_answers_times_out_once_per_pass(db, monkeypatch):
+    monkeypatch.setenv("VERILAYS_POSTGRES_BOOKINGS", "postgresql://u@10.255.255.1/bookings")
+    monkeypatch.setattr(worker, "CHECK_TIMEOUT_SECONDS", 2)  # libpq's smallest connect_timeout
+    for _ in range(2):
+        store.insert_action(DSN, "create_booking", "postgres", {"room": 4}, {"id": 1},
+                            check={"db": "bookings", "table": "bookings", "lookup_field": "id",
+                                   "fields_to_compare": []})
+
+    started = time.monotonic()
+    run_once()
+
+    assert time.monotonic() - started < 5  # without connect_timeout the OS waits ~75s
+    attempts = sorted(r["attempts"] for r in db.execute("SELECT attempts FROM verilays_actions"))
+    assert attempts == [0, 1]  # the first row timed out, the second wasn't tried
