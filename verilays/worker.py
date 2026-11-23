@@ -98,47 +98,43 @@ def _check_row(conn, row, now, connections):
 
     attempt = row["attempts"] + 1
     past_deadline = now >= row["deadline_at"]
+    # Each branch sets what it learned; columns it doesn't touch keep the row's old value.
+    error = row["error"]
+    evidence = row["evidence"]
     try:
         verify = _verify_from_check(row, connections) if row["check"] else entry["verify"]
         res = verify(row["params"], row["result"], row)
         if not isinstance(res, CheckResult):
             raise TypeError(f"check returned {res!r}, not a CheckResult")
     except ConfigError as e:
+        status = "check_error"
+        error = str(e)
         log.warning("action %s/%s → check_error: %s (fix the worker's config and restart it)",
                     row["action_id"], row["action_type"], e)
-        conn.execute(
-            "UPDATE verilays_actions SET status = 'check_error', error = %s, attempts = %s,"
-            " updated_at = %s WHERE action_id = %s",
-            (str(e), attempt, now, row["action_id"]),
-        )
-        return
     except Exception as e:
         # We never found out, so this is expired, not missing: don't blame the agent.
         status = "expired" if past_deadline else "pending"
+        error = repr(e)
         log.warning("action %s/%s check raised → %s (attempt %d)",
                     row["action_id"], row["action_type"], status, attempt, exc_info=True)
-        conn.execute(
-            "UPDATE verilays_actions SET status = %s, error = %s, attempts = %s, updated_at = %s"
-            " WHERE action_id = %s",
-            (status, repr(e), attempt, now, row["action_id"]),
-        )
-        return
-
-    if res.status in ("verified", "mismatch"):
-        status = res.status
-    elif res.status == "not_found" and past_deadline:
-        status = "missing"
     else:
-        # shortcut: ambiguous stays pending even after the deadline; #5 gives it a verdict.
         status = "pending"
+
+        if res.status in ("verified", "mismatch"):
+            status = res.status
+        elif res.status == "not_found" and past_deadline:
+            status = "missing"
+        evidence = res.evidence
+        log.info("action %s/%s → %s (check %s, attempt %d) evidence=%s",
+                 row["action_id"], row["action_type"], status, res.status, attempt,
+                 res.evidence)
+
     conn.execute(
-        "UPDATE verilays_actions SET status = %s, evidence = %s, attempts = %s,"
+        "UPDATE verilays_actions SET status = %s, error = %s, evidence = %s, attempts = %s,"
         " updated_at = %s WHERE action_id = %s",
-        (status, _jsonb(res.evidence), attempt, now, row["action_id"]),
+        (status, error, _jsonb(evidence) if evidence is not None else None, attempt, now,
+         row["action_id"]),
     )
-    log.info("action %s/%s → %s (check %s, attempt %d) evidence=%s",
-             row["action_id"], row["action_type"], status, res.status, attempt,
-             res.evidence)
 
 
 def retry_check_errors():

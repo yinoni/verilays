@@ -469,3 +469,29 @@ def test_a_failed_query_does_not_break_the_next_check_on_the_same_database(booki
     assert rows["wrong_table"]["status"] == "pending"
     assert "no_such_table" in rows["wrong_table"]["error"]
     assert rows["create_booking"]["status"] == "verified"
+
+
+def test_a_check_that_raises_leaves_evidence_null(db):
+    @verilays.action(tool_name="broken", system="crm", verify=lambda p, r, c: 1 / 0)
+    def broken():
+        return None
+
+    broken()
+    run_once()
+
+    assert db.execute("SELECT evidence IS NULL AS empty FROM verilays_actions").fetchone()["empty"]
+
+
+def test_a_check_that_raises_keeps_the_evidence_of_the_earlier_check(bookings):
+    book_tool(writes=False)(room=4, start_time="10:00")
+    run_once()  # not found: evidence {"key": {"id": 999}}
+    bookings.execute("ALTER TABLE bookings RENAME TO bookings_gone")  # the next check raises
+
+    try:
+        run_once()
+    finally:
+        bookings.execute("ALTER TABLE bookings_gone RENAME TO bookings")
+
+    row = only_row(bookings)
+    assert "bookings" in row["error"]
+    assert row["evidence"] == {"key": {"id": 999}}
