@@ -61,12 +61,17 @@ def run_once(now=None):
     Found → verified or mismatch. Not found → stays pending until deadline_at, then missing.
     A check that raises keeps it pending until deadline_at, then expired.
     """
-    now = now or datetime.datetime.now(datetime.timezone.utc)
     # A row that stays pending must not come back in this pass, so each batch starts after the last one.
     after = (datetime.datetime.min.replace(tzinfo=datetime.timezone.utc), uuid.UUID(int=0))
     connections = {}
     try:
         with psycopg.connect(verilays._dsn, row_factory=dict_row) as conn:
+            if now is None:
+                # deadline_at was set by the database's clock, so compare with that clock too:
+                # a worker whose clock runs ahead would otherwise mark rows missing too early.
+                # Its own transaction, or every batch below would nest inside it and keep its locks.
+                with conn.transaction():
+                    now = conn.execute("SELECT now()").fetchone()["now"]
             while True:
                 # The row locks are held until the batch commits, so a second worker skips these rows.
                 with conn.transaction():

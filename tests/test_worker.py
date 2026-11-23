@@ -1,6 +1,7 @@
 import datetime
 import logging
 import threading
+import types
 
 import psycopg
 import pytest
@@ -495,3 +496,36 @@ def test_a_check_that_raises_keeps_the_evidence_of_the_earlier_check(bookings):
     row = only_row(bookings)
     assert "bookings" in row["error"]
     assert row["evidence"] == {"key": {"id": 999}}
+
+
+def test_deadline_uses_the_database_clock_not_the_workers(bookings, monkeypatch):
+    class OneHourAhead(datetime.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.datetime.now(tz) + datetime.timedelta(hours=1)
+
+    monkeypatch.setattr(worker, "datetime",
+                        types.SimpleNamespace(datetime=OneHourAhead, timezone=datetime.timezone))
+    book_tool(writes=False)(room=4, start_time="10:00")  # deadline: 1m from now, by the DB's clock
+
+    run_once()
+
+    assert only_row(bookings)["status"] == "pending"
+
+
+def test_each_batch_commits_before_the_next_one_starts(db):
+    checked = []
+    verified_when_batch_2_started = []
+
+    def verify(params, result, row):
+        checked.append(row["action_id"])
+        if len(checked) == 101:  # first row of batch 2
+            count = db.execute("SELECT count(*) AS n FROM verilays_actions WHERE status = 'verified'")
+            verified_when_batch_2_started.append(count.fetchone()["n"])
+        return CheckResult.verified()
+
+    many_pings(db, 150, verify)
+
+    run_once()
+
+    assert verified_when_batch_2_started == [100]
