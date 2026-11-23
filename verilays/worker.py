@@ -84,11 +84,13 @@ BATCH_SIZE = 100
 
 
 def run_once(now=None):
-    """Check every pending action, and every mismatch before its deadline_at, once per pass,
+    """Check every pending action, and every mismatch or verified before its deadline_at, once per pass,
     in batches of BATCH_SIZE, one transaction per batch.
 
     Found → verified or mismatch. Not found → stays pending until deadline_at, then missing.
     A mismatch before deadline_at is checked again, so a later correct check makes it verified.
+    A verified before deadline_at is checked again; if it no longer checks out, someone else
+    changed it after the agent's write, so it becomes ambiguous (final), never a failure.
     A check that raises keeps the row's status until deadline_at, then expired.
     """
     # A row that stays pending must not come back in this pass, so each batch starts after the last one.
@@ -107,7 +109,7 @@ def run_once(now=None):
                 with conn.transaction():
                     rows = conn.execute(
                         "SELECT * FROM verilays_actions"
-                        " WHERE (status = 'pending' OR (status = 'mismatch' AND deadline_at > %s))"
+                        " WHERE (status = 'pending' OR (status IN ('mismatch', 'verified') AND deadline_at > %s))"
                         " AND (created_at, action_id) > (%s, %s)"
                         " ORDER BY created_at, action_id LIMIT %s FOR UPDATE SKIP LOCKED",
                         (now, *after, BATCH_SIZE),
@@ -151,10 +153,11 @@ def _check_row(conn, row, now, connections):
                  row["action_id"], row["action_type"], e)
         return
     except ConfigError as e:
-        status = "check_error"
+        # A verified stays verified: check_error rows go back to pending when the worker restarts.
+        status = "verified" if row["status"] == "verified" else "check_error"
         error = str(e)
-        log.warning("action %s/%s → check_error: %s (fix the worker's config and restart it)",
-                    row["action_id"], row["action_type"], e)
+        log.warning("action %s/%s → %s: %s (fix the worker's config and restart it)",
+                    row["action_id"], row["action_type"], status, e)
     except Exception as e:
         # We never found out, so this is expired, not missing: don't blame the agent.
         status = "expired" if past_deadline else row["status"]
@@ -162,13 +165,12 @@ def _check_row(conn, row, now, connections):
         log.warning("action %s/%s check raised → %s (attempt %d)",
                     row["action_id"], row["action_type"], status, attempt, exc_info=True)
     else:
-        status = "pending"
-
-        if res.status in ("verified", "mismatch"):
-            status = res.status
-        elif res.status == "not_found" and past_deadline:
-            status = "missing"
         evidence = res.evidence
+        status = _next_status(row["status"], res.status, past_deadline)
+
+        if status == "ambiguous":
+            evidence = {**res.evidence, "changed_after_verify": True}
+
         log.info("action %s/%s → %s (check %s, attempt %d) evidence=%s",
                  row["action_id"], row["action_type"], status, res.status, attempt,
                  res.evidence)
@@ -179,6 +181,19 @@ def _check_row(conn, row, now, connections):
         (status, error, _jsonb(evidence) if evidence is not None else None, duplicate_of, attempt,
          now, row["action_id"]),
     )
+
+
+def _next_status(old_status, checked_status, past_deadline):
+    status = "pending"
+
+    if old_status == "verified" and checked_status != "verified":
+        status = "ambiguous"
+    elif checked_status in ("verified", "mismatch"):
+        status = checked_status
+    elif checked_status == "not_found" and past_deadline:
+        status = "missing"
+
+    return status
 
 
 def _find_earlier_duplicate(conn, row):

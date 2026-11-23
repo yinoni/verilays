@@ -49,10 +49,16 @@ def _count_table(counts):
 
 def _attention_line(row):
     status = row["status"]
+    evidence = row["evidence"] or {}
     reasons = []
-    if status == "mismatch" and "diff" in (row["evidence"] or {}):
+    if status == "mismatch" and "diff" in evidence:
         reasons += [f"{field}: expected {d['expected']}, got {d['got']}"
-                    for field, d in row["evidence"]["diff"].items()]
+                    for field, d in evidence["diff"].items()]
+    elif status == "ambiguous" and "diff" in evidence:
+        reasons += [f"changed after verified: {field} {d['expected']} → {d['got']}"
+                    for field, d in evidence["diff"].items()]
+    elif status == "ambiguous" and evidence.get("changed_after_verify"):
+        reasons.append("changed after verified: no longer found")
     elif status == "missing":
         reasons.append(f"not found after {row['deadline_at'] - row['created_at']}")
     elif status == "expired":
@@ -60,7 +66,7 @@ def _attention_line(row):
     elif status in ("failed", "check_error"):
         reasons.append(row["error"])
     elif status in NEEDS_ATTENTION:
-        reasons.append(str(row["evidence"]))  # a custom check's mismatch, or ambiguous
+        reasons.append(str(row["evidence"]))  # a custom check's mismatch
     if row["duplicate_of"] is not None:
         first_id = str(row["duplicate_of"])[:8]
         reasons.append(f"duplicate of {first_id}, {int(row['seconds_after'])}s later")
