@@ -165,16 +165,12 @@ def _check_row(conn, row, now, connections):
         log.warning("action %s/%s check raised → %s (attempt %d)",
                     row["action_id"], row["action_type"], status, attempt, exc_info=True)
     else:
-        status = "pending"
         evidence = res.evidence
+        status = _next_status(row["status"], res.status, past_deadline)
 
-        if row["status"] == "verified" and res.status != "verified":
-            status = "ambiguous"
-            evidence = {"changed_after_verify": True, **res.evidence}
-        elif res.status in ("verified", "mismatch"):
-            status = res.status
-        elif res.status == "not_found" and past_deadline:
-            status = "missing"
+        if status == "ambiguous":
+            evidence = {**res.evidence, "changed_after_verify": True}
+
         log.info("action %s/%s → %s (check %s, attempt %d) evidence=%s",
                  row["action_id"], row["action_type"], status, res.status, attempt,
                  res.evidence)
@@ -185,6 +181,19 @@ def _check_row(conn, row, now, connections):
         (status, error, _jsonb(evidence) if evidence is not None else None, duplicate_of, attempt,
          now, row["action_id"]),
     )
+
+
+def _next_status(old_status, checked_status, past_deadline):
+    status = "pending"
+
+    if old_status == "verified" and checked_status != "verified":
+        status = "ambiguous"
+    elif checked_status in ("verified", "mismatch"):
+        status = checked_status
+    elif checked_status == "not_found" and past_deadline:
+        status = "missing"
+
+    return status
 
 
 def _find_earlier_duplicate(conn, row):
