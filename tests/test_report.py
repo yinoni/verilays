@@ -77,6 +77,19 @@ def test_needs_attention_lists_problems_with_a_reason_and_skips_good_rows(db, mo
     assert len(attention.splitlines()) == 6
 
 
+def test_ambiguous_says_what_changed_after_verified(db, monkeypatch):
+    seed(db, "create_booking", "ambiguous", params={"room": 4}, evidence={
+        "changed_after_verify": True, "key": {"id": 1},
+        "diff": {"start_time": {"expected": "10:00", "got": "11:00:00"}}})
+    seed(db, "create_booking", "ambiguous", params={"room": 5},
+         evidence={"changed_after_verify": True, "key": {"id": 2}})
+
+    attention = report(monkeypatch).split("Needs attention\n")[1]
+
+    assert "ambiguous    room=4  changed after verified: start_time 10:00 → 11:00:00" in attention
+    assert "ambiguous    room=5  changed after verified: no longer found" in attention
+
+
 def test_empty_store_says_no_actions_recorded(db, monkeypatch):
     assert report(monkeypatch) == "no actions recorded\n"
 
