@@ -84,10 +84,12 @@ BATCH_SIZE = 100
 
 
 def run_once(now=None):
-    """Check every pending action once, in batches of BATCH_SIZE, one transaction per batch.
+    """Check every pending action, and every mismatch before its deadline_at, once per pass,
+    in batches of BATCH_SIZE, one transaction per batch.
 
     Found → verified or mismatch. Not found → stays pending until deadline_at, then missing.
-    A check that raises keeps it pending until deadline_at, then expired.
+    A mismatch before deadline_at is checked again, so a later correct check makes it verified.
+    A check that raises keeps the row's status until deadline_at, then expired.
     """
     # A row that stays pending must not come back in this pass, so each batch starts after the last one.
     after = (datetime.datetime.min.replace(tzinfo=datetime.timezone.utc), uuid.UUID(int=0))
@@ -104,10 +106,11 @@ def run_once(now=None):
                 # The row locks are held until the batch commits, so a second worker skips these rows.
                 with conn.transaction():
                     rows = conn.execute(
-                        "SELECT * FROM verilays_actions WHERE status = 'pending'"
+                        "SELECT * FROM verilays_actions"
+                        " WHERE (status = 'pending' OR (status = 'mismatch' AND deadline_at > %s))"
                         " AND (created_at, action_id) > (%s, %s)"
                         " ORDER BY created_at, action_id LIMIT %s FOR UPDATE SKIP LOCKED",
-                        (*after, BATCH_SIZE),
+                        (now, *after, BATCH_SIZE),
                     ).fetchall()
                     # shortcut: one query per row; batch per table (WHERE id = ANY(...))
                     # when pending rows reach the thousands.
@@ -151,7 +154,7 @@ def _check_row(conn, row, now, connections):
                     row["action_id"], row["action_type"], e)
     except Exception as e:
         # We never found out, so this is expired, not missing: don't blame the agent.
-        status = "expired" if past_deadline else "pending"
+        status = "expired" if past_deadline else row["status"]
         error = repr(e)
         log.warning("action %s/%s check raised → %s (attempt %d)",
                     row["action_id"], row["action_type"], status, attempt, exc_info=True)

@@ -305,6 +305,59 @@ def test_late_write_before_the_deadline_is_verified(bookings):
     assert only_row(bookings)["status"] == "verified"
 
 
+def test_mismatch_fixed_before_the_deadline_is_verified(bookings):
+    book_tool()(room=4, start_time="10:00")
+    bookings.execute("UPDATE bookings SET start_time = '11:00'")
+    deadline = only_row(bookings)["deadline_at"]
+
+    run_once(now=deadline - 30 * SECOND)
+    assert only_row(bookings)["status"] == "mismatch"
+
+    bookings.execute("UPDATE bookings SET start_time = '10:00'")
+    run_once(now=deadline - 20 * SECOND)
+
+    assert only_row(bookings)["status"] == "verified"
+
+
+def test_mismatch_still_wrong_at_the_deadline_stays_mismatch(bookings):
+    book_tool()(room=4, start_time="10:00")
+    bookings.execute("UPDATE bookings SET start_time = '11:00'")
+    deadline = only_row(bookings)["deadline_at"]
+
+    run_once(now=deadline - 30 * SECOND)
+    run_once(now=deadline)                  # not checked again: the deadline has passed
+    bookings.execute("UPDATE bookings SET start_time = '10:00'")
+    run_once(now=deadline + SECOND)
+
+    row = only_row(bookings)
+    assert row["status"] == "mismatch"
+    assert row["attempts"] == 1
+
+
+def test_check_that_raises_keeps_a_provisional_mismatch(db):
+    crm = {"down": False}
+
+    def verify(params, result, ctx):
+        if crm["down"]:
+            raise ConnectionError("crm is down")
+        return CheckResult.mismatch()
+
+    @verilays.action(tool_name="notify", system="crm", verify=verify)
+    def notify():
+        return None
+
+    notify()
+    deadline = only_row(db)["deadline_at"]
+
+    run_once(now=deadline - 30 * SECOND)
+    crm["down"] = True
+    run_once(now=deadline - 20 * SECOND)
+
+    row = only_row(db)
+    assert row["status"] == "mismatch"
+    assert row["error"] == "ConnectionError('crm is down')"
+
+
 def test_check_that_always_raises_is_expired_after_the_deadline_never_missing(db):
     def broken(params, result, ctx):
         raise ConnectionError("crm is down")
@@ -394,6 +447,16 @@ def many_pings(db, count, verify):
 
 def test_one_pass_checks_every_row_across_several_batches(db):
     many_pings(db, 250, verify=lambda p, r, c: CheckResult.not_found())  # all stay pending
+
+    run_once()
+
+    attempts = [r["attempts"] for r in db.execute("SELECT attempts FROM verilays_actions")]
+    assert attempts == [1] * 250  # every row once, none twice
+
+
+def test_one_pass_checks_every_provisional_mismatch_once(db):
+    many_pings(db, 250, verify=lambda p, r, c: CheckResult.mismatch())
+    db.execute("UPDATE verilays_actions SET status = 'mismatch'")
 
     run_once()
 
