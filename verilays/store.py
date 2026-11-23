@@ -27,6 +27,11 @@ CREATE TABLE IF NOT EXISTS verilays_actions (
 )
 """
 
+# The duplicate lookup reads one tool's rows from the last duplicate_window.
+CREATE_INDEX = """
+CREATE INDEX IF NOT EXISTS verilays_actions_type_created ON verilays_actions (action_type, created_at)
+"""
+
 # Non-JSON values (dates, Decimals, ...) are stored as their str().
 _jsonb = partial(Jsonb, dumps=partial(json.dumps, default=str))
 
@@ -34,6 +39,7 @@ _jsonb = partial(Jsonb, dumps=partial(json.dumps, default=str))
 def create_table(dsn):
     with psycopg.connect(dsn) as conn:
         conn.execute(CREATE_TABLE)
+        conn.execute(CREATE_INDEX)
 
 
 def insert_action(dsn, action_type, system, params, result, deadline=datetime.timedelta(minutes=1),
