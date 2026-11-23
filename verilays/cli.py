@@ -8,6 +8,7 @@ import threading
 import click
 
 import verilays
+from verilays.report import report as build_report
 from verilays.worker import retry_check_errors, run_every, run_once
 
 
@@ -48,3 +49,11 @@ def worker(app, once, every):
     stop = threading.Event()
     signal.signal(signal.SIGTERM, lambda signum, frame: stop.set())
     run_every(every, stop)
+
+
+@main.command()
+def report():
+    """Print action counts per tool and status, then every action that needs attention."""
+    if "VERILAYS_DSN" not in os.environ:
+        raise click.ClickException("no DSN: set VERILAYS_DSN to the action store's URL")
+    click.echo(build_report(os.environ["VERILAYS_DSN"]))
