@@ -334,6 +334,78 @@ def test_mismatch_still_wrong_at_the_deadline_stays_mismatch(bookings):
     assert row["attempts"] == 1
 
 
+def test_verified_is_rechecked_until_the_deadline(bookings):
+    book_tool()(room=4, start_time="10:00")
+    deadline = only_row(bookings)["deadline_at"]
+
+    run_once(now=deadline - 30 * SECOND)
+    run_once(now=deadline - 20 * SECOND)
+    run_once(now=deadline)                  # not checked again: the deadline has passed
+
+    row = only_row(bookings)
+    assert row["status"] == "verified"
+    assert row["attempts"] == 2
+
+
+def test_verified_then_changed_is_ambiguous_with_the_diff(bookings):
+    book_tool()(room=4, start_time="10:00")
+    deadline = only_row(bookings)["deadline_at"]
+
+    run_once(now=deadline - 30 * SECOND)
+    bookings.execute("UPDATE bookings SET start_time = '11:00'")  # someone else moves it
+    run_once(now=deadline - 20 * SECOND)
+
+    row = only_row(bookings)
+    assert row["status"] == "ambiguous"
+    assert row["evidence"] == {
+        "changed_after_verify": True,
+        "key": {"id": 1},
+        "diff": {"start_time": {"expected": "10:00", "got": "11:00:00"}},
+    }
+
+
+def test_verified_then_deleted_is_ambiguous(bookings):
+    book_tool()(room=4, start_time="10:00")
+    deadline = only_row(bookings)["deadline_at"]
+
+    run_once(now=deadline - 30 * SECOND)
+    bookings.execute("DELETE FROM bookings")
+    run_once(now=deadline - 20 * SECOND)
+
+    row = only_row(bookings)
+    assert row["status"] == "ambiguous"
+    assert row["evidence"] == {"changed_after_verify": True, "key": {"id": 1}}
+
+
+def test_ambiguous_is_final_even_if_the_row_is_changed_back(bookings):
+    book_tool()(room=4, start_time="10:00")
+    deadline = only_row(bookings)["deadline_at"]
+
+    run_once(now=deadline - 30 * SECOND)
+    bookings.execute("UPDATE bookings SET start_time = '11:00'")
+    run_once(now=deadline - 20 * SECOND)
+    bookings.execute("UPDATE bookings SET start_time = '10:00'")
+    run_once(now=deadline - 10 * SECOND)
+    run_once(now=deadline + SECOND)
+
+    row = only_row(bookings)
+    assert row["status"] == "ambiguous"
+    assert row["attempts"] == 2
+
+
+def test_config_error_on_a_verified_action_keeps_it_verified(bookings, monkeypatch):
+    monkeypatch.setenv("VERILAYS_POSTGRES_BOOKINGS", DSN)
+    postgres_tool()(room=4, start_time="10:00")
+    run_once()
+
+    monkeypatch.delenv("VERILAYS_POSTGRES_BOOKINGS")
+    run_once()
+
+    row = only_row(bookings)
+    assert row["status"] == "verified"  # not check_error: a worker restart would reset that to pending
+    assert "VERILAYS_POSTGRES_BOOKINGS is not set" in row["error"]
+
+
 def test_check_that_raises_keeps_a_provisional_mismatch(db):
     crm = {"down": False}
 
@@ -489,9 +561,10 @@ def test_two_workers_check_disjoint_rows(db):
     a.join(5)
 
     assert b_finished_while_a_held_its_rows  # B skipped A's locked rows instead of waiting
-    assert len(checked["A"]) == 100
+    a_first_batch = checked["A"][:100]
     assert len(checked["B"]) == 50
-    assert not set(checked["A"]) & set(checked["B"])
+    assert not set(a_first_batch) & set(checked["B"])
+    assert len(checked["A"]) == 150  # A's second batch rechecks B's verified rows: they're before deadline_at
     statuses = {r["status"] for r in db.execute("SELECT status FROM verilays_actions")}
     assert statuses == {"verified"}
 
