@@ -140,7 +140,7 @@ def test_action_postgres_saves_its_check_in_the_row_and_needs_no_verify(db):
     row = db.execute("SELECT * FROM verilays_actions").fetchone()
     assert row["system"] == "postgres"
     assert row["check"] == {"db": "bookings", "table": "bookings", "lookup_field": "id",
-                            "fields_to_compare": ["room", "start_time"]}
+                            "fields_to_compare": ["room", "start_time"], "duplicate_window": "1m"}
     assert verilays.registry == {}
 
 

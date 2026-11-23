@@ -204,11 +204,11 @@ def test_result_without_the_lookup_field_stays_pending_with_a_clear_warning(book
     assert "result has no field 'id' (got 1)" in caplog.text
 
 
-def postgres_tool():
+def postgres_tool(fields_to_compare=("room", "start_time"), **kwargs):
     """A create_booking tool that saves its check as data; no verify function, nothing in registry."""
 
     @verilays.action.postgres("create_booking", db="bookings", table="bookings",
-                              lookup_field="id", fields_to_compare=["room", "start_time"])
+                              lookup_field="id", fields_to_compare=list(fields_to_compare), **kwargs)
     def create_booking(room, start_time):
         with bookings_conn() as conn:
             row = conn.execute(
@@ -638,3 +638,59 @@ def test_a_database_that_never_answers_times_out_once_per_pass(db, monkeypatch):
     assert time.monotonic() - started < 5  # without connect_timeout the OS waits ~75s
     attempts = sorted(r["attempts"] for r in db.execute("SELECT attempts FROM verilays_actions"))
     assert attempts == [0, 1]  # the first row timed out, the second wasn't tried
+
+
+def book_twice(bookings, monkeypatch, gap, second=(4, "10:00"), first_failed=False, **tool_args):
+    """Book room 4 at 10:00, then `second`; the first action is moved `gap` earlier. Returns both rows after one pass."""
+    monkeypatch.setenv("VERILAYS_POSTGRES_BOOKINGS", DSN)
+    tool = postgres_tool(**tool_args)
+    tool(4, "10:00")
+    tool(*second)
+    first_id = bookings.execute(
+        "SELECT action_id FROM verilays_actions ORDER BY created_at LIMIT 1").fetchone()["action_id"]
+    bookings.execute("UPDATE verilays_actions SET created_at = created_at - %s WHERE action_id = %s",
+                     (gap, first_id))
+    if first_failed:
+        bookings.execute("UPDATE verilays_actions SET status = 'failed' WHERE action_id = %s", (first_id,))
+
+    run_once()
+
+    return bookings.execute("SELECT * FROM verilays_actions ORDER BY created_at").fetchall()
+
+
+def test_same_booking_within_the_window_is_a_duplicate_of_the_first(bookings, monkeypatch):
+    a, b = book_twice(bookings, monkeypatch, gap=datetime.timedelta(seconds=30))
+
+    assert (a["status"], b["status"]) == ("verified", "verified")
+    assert a["duplicate_of"] is None
+    assert b["duplicate_of"] == a["action_id"]
+
+
+def test_same_booking_outside_the_window_is_not_a_duplicate(bookings, monkeypatch):
+    a, b = book_twice(bookings, monkeypatch, gap=datetime.timedelta(minutes=2))
+
+    assert b["duplicate_of"] is None
+
+
+def test_different_room_is_not_a_duplicate(bookings, monkeypatch):
+    a, b = book_twice(bookings, monkeypatch, gap=datetime.timedelta(seconds=30), second=(5, "10:00"))
+
+    assert b["duplicate_of"] is None
+
+
+def test_retry_after_a_failed_booking_is_not_a_duplicate(bookings, monkeypatch):
+    a, b = book_twice(bookings, monkeypatch, gap=datetime.timedelta(seconds=30), first_failed=True)
+
+    assert b["duplicate_of"] is None
+
+
+def test_no_fields_to_compare_is_never_a_duplicate(bookings, monkeypatch):
+    a, b = book_twice(bookings, monkeypatch, gap=datetime.timedelta(seconds=30), fields_to_compare=[])
+
+    assert b["duplicate_of"] is None
+
+
+def test_duplicate_window_is_set_per_action(bookings, monkeypatch):
+    a, b = book_twice(bookings, monkeypatch, gap=datetime.timedelta(minutes=2), duplicate_window="5m")
+
+    assert b["duplicate_of"] == a["action_id"]

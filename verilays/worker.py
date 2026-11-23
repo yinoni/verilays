@@ -138,6 +138,9 @@ def _check_row(conn, row, now, connections):
     # Each branch sets what it learned; columns it doesn't touch keep the row's old value.
     error = row["error"]
     evidence = row["evidence"]
+    duplicate_of = row["duplicate_of"]
+    if row["attempts"] == 0:
+        duplicate_of = _find_earlier_duplicate(conn, row)
     try:
         verify = _verify_from_check(row, connections) if row["check"] else entry["verify"]
         res = verify(row["params"], row["result"], row)
@@ -171,11 +174,33 @@ def _check_row(conn, row, now, connections):
                  res.evidence)
 
     conn.execute(
-        "UPDATE verilays_actions SET status = %s, error = %s, evidence = %s, attempts = %s,"
-        " updated_at = %s WHERE action_id = %s",
-        (status, error, _jsonb(evidence) if evidence is not None else None, attempt, now,
-         row["action_id"]),
+        "UPDATE verilays_actions SET status = %s, error = %s, evidence = %s, duplicate_of = %s,"
+        " attempts = %s, updated_at = %s WHERE action_id = %s",
+        (status, error, _jsonb(evidence) if evidence is not None else None, duplicate_of, attempt,
+         now, row["action_id"]),
     )
+
+
+def _find_earlier_duplicate(conn, row):
+    """The id of an earlier, not failed, call of the same tool with the same fields_to_compare values
+    within its duplicate_window, or None. Only action.postgres rows have fields_to_compare.
+    """
+    check = row["check"]
+    if not check or not check.get("fields_to_compare"):
+        return None
+    # shortcut: every field in fields_to_compare counts, so a different `notes` hides a duplicate;
+    # add a separate list of identity fields if that bites.
+    same_values = {f: row["params"][f] for f in check["fields_to_compare"]}
+    window = verilays.parse_duration(check.get("duplicate_window", "1m"))  # rows saved before the window existed
+    earlier = conn.execute(
+        "SELECT action_id FROM verilays_actions"
+        " WHERE action_type = %s AND params @> %s AND status <> 'failed'"
+        " AND (created_at, action_id) < (%s, %s) AND created_at >= %s"
+        " ORDER BY created_at, action_id LIMIT 1",
+        (row["action_type"], _jsonb(same_values), row["created_at"], row["action_id"],
+         row["created_at"] - window),
+    ).fetchone()
+    return earlier["action_id"] if earlier else None
 
 
 def retry_check_errors():
