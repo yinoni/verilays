@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from dataclasses import dataclass, fields
 
 from psycopg import sql
@@ -17,6 +18,13 @@ class PostgresCheck:
     exists: bool = True
     expected: dict | None = None
 
+    def __post_init__(self):
+        # Type hints only warn in the editor; this makes a wrong type fail when the tool's file loads.
+        for f in fields(self):
+            value = getattr(self, f.name)
+            if not isinstance(value, f.type):
+                raise TypeError(f"{f.name} must be {getattr(f.type, '__name__', f.type)}, got {value!r}")
+
     @classmethod
     def from_saved(cls, saved):
         """Older rows miss newer keys (the defaults fill them); a newer Verilays's extra keys are dropped."""
@@ -24,7 +32,8 @@ class PostgresCheck:
         return cls(**{k: v for k, v in saved.items() if k in known})
 
 
-def pg_row_matches(connect, table, lookup_field, fields_to_compare, exists=True, expected=None):
+def pg_row_matches(connect: Callable, table: str, lookup_field: str, fields_to_compare: list[str],
+                   exists: bool = True, expected: dict | None = None) -> Callable:
     """Check that exactly one row in `table` matches `lookup_field` and has the `fields_to_compare` values.
 
     lookup_field: "id" finds the row where column id = result["id"], or params["id"]

@@ -167,10 +167,9 @@ def test_deadline_strings_parse(text, expected):
 
 
 @pytest.mark.parametrize("bad", ["5 min", "1d", "m", "-5m", "", 60])
-def test_bad_deadline_is_rejected_when_the_tool_is_decorated(bad):
+def test_bad_deadline_is_rejected_by_parse_duration(bad):
     with pytest.raises(ValueError, match="deadline must look like '10s', '5m' or '1h'"):
-        verilays.action.postgres("create_booking", db="bookings", table="bookings",
-                                 lookup_field="id", fields_to_compare=["room"], deadline=bad)
+        verilays.parse_duration(bad)
 
 
 def test_deadline_is_stored_in_deadline_at_default_1m(db):
@@ -201,3 +200,23 @@ def test_saved_check_fills_missing_keys_and_drops_unknown_ones():
 
     assert PostgresCheck.from_saved(old) == PostgresCheck(**old)  # duplicate_window, exists, expected: defaults
     assert PostgresCheck.from_saved(newer) == PostgresCheck(**old)
+
+
+@pytest.mark.parametrize("bad, message", [
+    ({"lookup_field": 5}, "lookup_field must be str, got 5"),
+    ({"fields_to_compare": "room"}, "fields_to_compare must be list, got 'room'"),
+    ({"exists": "no"}, "exists must be bool, got 'no'"),
+    ({"expected": "cancelled"}, "expected must be dict | None, got 'cancelled'"),
+    ({"deadline": "5 min"}, "deadline must look like '10s', '5m' or '1h'"),
+    ({"duplicate_window": "1d"}, "deadline must look like '10s', '5m' or '1h'"),
+])
+def test_action_postgres_with_a_bad_setting_still_runs_the_tool_unchecked(db, caplog, bad, message):
+    args = {"db": "shop", "table": "orders", "lookup_field": "id", "fields_to_compare": [], **bad}
+
+    @verilays.action.postgres("cancel_order", **args)
+    def cancel_order(id):
+        return "cancelled"
+
+    assert cancel_order(1) == "cancelled"
+    assert db.execute("SELECT count(*) AS n FROM verilays_actions").fetchone()["n"] == 0
+    assert f"cancel_order runs but is not checked: {message}" in caplog.text
