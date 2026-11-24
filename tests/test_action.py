@@ -220,3 +220,16 @@ def test_action_postgres_with_a_bad_setting_still_runs_the_tool_unchecked(db, ca
     assert cancel_order(1) == "cancelled"
     assert db.execute("SELECT count(*) AS n FROM verilays_actions").fetchone()["n"] == 0
     assert f"cancel_order runs but is not checked: {message}" in caplog.text
+
+
+def test_action_postgres_saves_only_the_checked_arguments_and_result_field(db):
+    @verilays.action.postgres("refund", db="shop", table="orders", lookup_field="order_id",
+                              fields_to_compare=["amount"])
+    def refund(order_id, amount, card_number):
+        return {"order_id": order_id, "receipt_url": "https://pay.example/r/secret"}
+
+    refund(42, 30, "4111 1111 1111 1111")
+
+    row = db.execute("SELECT params, result FROM verilays_actions").fetchone()
+    assert row["params"] == {"order_id": 42, "amount": 30}
+    assert row["result"] == {"order_id": 42}

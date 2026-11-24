@@ -63,9 +63,9 @@ def test_saved_booking_is_verified_and_the_decision_is_logged(bookings, caplog):
     assert row["status"] == "verified"
     assert row["attempts"] == 1
     assert row["updated_at"] == now
-    assert row["evidence"] == {"key": {"id": 2}, "row": {"room": "4", "start_time": "10:00:00"}}
+    assert row["evidence"] == {"key": {"id": 2}}
     assert "→ verified (check verified, attempt 1)" in caplog.text
-    assert "10:00:00" in caplog.text  # the value behind the decision
+    assert "evidence={'key': {'id': 2}}" in caplog.text  # which row; its values aren't logged
 
 
 def test_booking_never_saved_stays_pending_and_is_retried(bookings, caplog):
@@ -247,7 +247,7 @@ def test_action_postgres_is_verified_with_only_the_db_env_var(bookings, monkeypa
 
     row = only_row(bookings)
     assert row["status"] == "verified"
-    assert row["evidence"] == {"key": {"id": 1}, "row": {"room": "4", "start_time": "10:00:00"}}
+    assert row["evidence"] == {"key": {"id": 1}}
 
 
 def test_exists_false_is_verified_once_the_row_is_gone_and_mismatch_if_it_stays(bookings, monkeypatch):
