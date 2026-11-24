@@ -42,9 +42,10 @@ def _postgres(saved_check, connections):
     if url not in connections:
         try:
             # autocommit: a failed query (say, a wrong table) must not abort the next row's check.
+            # read_only: Postgres refuses writes here even if the URL's user is allowed to write.
             connections[url] = psycopg.connect(
                 url, autocommit=True, connect_timeout=CHECK_TIMEOUT_SECONDS,
-                options=f"-c statement_timeout={CHECK_TIMEOUT_SECONDS}s")
+                options=f"-c statement_timeout={CHECK_TIMEOUT_SECONDS}s -c default_transaction_read_only=on")
         except psycopg.OperationalError:
             connections[url] = None
             raise

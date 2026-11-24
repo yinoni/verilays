@@ -89,7 +89,7 @@ verilays report
 ## How it works
 
 1. The decorator runs your tool unchanged, then records the tool name, its arguments, its result and a deadline in the action store.
-2. The worker picks up pending actions and looks the record up in your database. It only reads there, so you can give it a read-only user.
+2. The worker picks up pending actions and looks the record up in your database. It opens that connection read-only, so Postgres refuses any write from it even if the user in the URL could write. A read-only user is still a good idea.
 3. It keeps checking until the deadline. Found with the right values is `verified`, different values is `mismatch`, and still not there at the deadline is `missing`.
 
 If Verilays can't record a call, your tool still runs and returns as normal. It never breaks your agent.
