@@ -78,14 +78,12 @@ def pg_row_matches(connect: Callable, table: str, lookup_field: str, fields_to_c
             return CheckResult.ambiguous(key=key, rows=">1")
         row = rows[0]
         diff = {}
-        got = {}
         for f in want:
-            got[f] = row[f]
             if not row[f + "_matches"]:
                 diff[f] = {"expected": want[f], "got": row[f]}
 
         if diff:
             return CheckResult.mismatch(key=key, diff=diff)
-        return CheckResult.verified(key=key, row=got)
+        return CheckResult.verified(key=key)  # no row values: they'd only repeat what matched
 
     return check

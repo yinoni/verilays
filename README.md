@@ -71,6 +71,8 @@ For a delete tool, pass `exists=False`: the action is verified once the row is g
 
 For a value the tool sets that isn't one of its arguments, pass `expected={"status": "cancelled"}`. A field in both `fields_to_compare` and `expected` is checked against `expected`.
 
+A wrong setting, like `lookup_field=5` or `deadline="5 min"`, never breaks your tool: it still runs, isn't checked, and a warning says why (`create_order runs but is not checked: lookup_field must be str, got 5`).
+
 **3. Run the worker.** `db="shop"` means it reads that database's URL from `VERILAYS_POSTGRES_SHOP`:
 
 ```

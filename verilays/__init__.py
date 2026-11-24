@@ -35,6 +35,12 @@ def _record(type, system, arguments, result, deadline, status="pending", error=N
     if _dsn is None:
         log.warning("%s not recorded: verilays.init(dsn) was never called", type)
         return
+    if check is not None:
+        # action.postgres: save only what the worker checks, so other arguments (a card number,
+        # a token) and the rest of the result never reach the store.
+        lookup = check["lookup_field"]
+        arguments = {k: v for k, v in arguments.items() if k == lookup or k in check["fields_to_compare"]}
+        result = {lookup: result[lookup]} if isinstance(result, dict) and lookup in result else None
     try:
         store.insert_action(_dsn, type, system, arguments, result, deadline, status=status,
                             error=error, check=check)
