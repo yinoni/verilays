@@ -4,19 +4,24 @@ from psycopg.rows import dict_row
 from verilays.checks import CheckResult
 
 
-def pg_row_matches(connect, table, lookup_field, fields_to_compare):
+def pg_row_matches(connect, table, lookup_field, fields_to_compare, exists=True):
     """Check that exactly one row in `table` matches `lookup_field` and has the `fields_to_compare` values.
 
-    lookup_field: "id" finds the row where column id = result["id"].
+    lookup_field: "id" finds the row where column id = result["id"], or params["id"]
+    when the result has no "id" (an update or cancel tool that was given the id).
     fields_to_compare: ["room"] checks that column room = params["room"].
+    exists=False: for a delete tool. Verified once the row is gone; while it's still there
+    the action stays pending until the deadline, then the worker marks it mismatch.
     """
     def check(params, result, ctx):
-        def from_result(name):
-            if not isinstance(result, dict) or name not in result:
-                raise LookupError(f"result has no field {name!r} (got {result!r})")
-            return result[name]
+        def lookup_value(name):
+            if isinstance(result, dict) and name in result:
+                return result[name]
+            if name in params:
+                return params[name]
+            raise LookupError(f"neither result nor params has field {name!r} (result was {result!r})")
 
-        key = {lookup_field: from_result(lookup_field)}
+        key = {lookup_field: lookup_value(lookup_field)}
         expected_values = [params[f] for f in fields_to_compare]
         # Postgres does the comparing, so "10:00" matches a time column holding 10:00:00.
         # Each field comes back twice: room (the DB value) and room_matches (True/False).
@@ -34,6 +39,8 @@ def pg_row_matches(connect, table, lookup_field, fields_to_compare):
                 query, [*expected_values, key[lookup_field]]
             ).fetchall()
 
+        if not exists:
+            return CheckResult.not_found(key=key, still_exists=True) if rows else CheckResult.verified(key=key)
         if not rows:
             return CheckResult.not_found(key=key)
         if len(rows) > 1:
