@@ -10,6 +10,7 @@ from psycopg.rows import dict_row
 import verilays
 from verilays.checks import CheckResult
 from verilays.recipes import pg_row_matches
+from verilays.recipes.postgres import PostgresCheck
 from verilays.store import _jsonb
 
 log = logging.getLogger("verilays")
@@ -27,16 +28,17 @@ class DatabaseDown(Exception):
 CHECK_TIMEOUT_SECONDS = 5
 
 
-def _postgres(check, connections):
-    db_name = check['db'].upper()
+def _postgres(saved_check, connections):
+    check = PostgresCheck.from_saved(saved_check)
+    db_name = check.db.upper()
     env = f"VERILAYS_POSTGRES_{db_name}"
 
     if env not in os.environ:
-        raise ConfigError(f"{env} is not set; set it to the URL of the {check['db']!r} database")
+        raise ConfigError(f"{env} is not set; set it to the URL of the {check.db!r} database")
 
     url = os.environ[env]
     if url in connections and connections[url] is None:
-        raise DatabaseDown(f"{check['db']!r} didn't answer earlier in this pass")
+        raise DatabaseDown(f"{check.db!r} didn't answer earlier in this pass")
     if url not in connections:
         try:
             # autocommit: a failed query (say, a wrong table) must not abort the next row's check.
@@ -49,9 +51,8 @@ def _postgres(check, connections):
     conn = connections[url]
 
     # nullcontext: pg_row_matches's `with` uses the pass's connection without closing it.
-    check_row = pg_row_matches(lambda: contextlib.nullcontext(conn), check["table"],
-                               check["lookup_field"], check["fields_to_compare"],
-                               check.get("exists", True), check.get("expected"))  # older rows lack these keys
+    check_row = pg_row_matches(lambda: contextlib.nullcontext(conn), check.table, check.lookup_field,
+                               check.fields_to_compare, check.exists, check.expected)
 
     def verify(params, result, ctx):
         try:
@@ -204,13 +205,15 @@ def _find_earlier_duplicate(conn, row):
     """The id of an earlier, not failed, call of the same tool with the same fields_to_compare values
     within its duplicate_window, or None. Only action.postgres rows have fields_to_compare.
     """
-    check = row["check"]
-    if not check or not check.get("fields_to_compare"):
+    if row["system"] != "postgres" or not row["check"]:
+        return None
+    check = PostgresCheck.from_saved(row["check"])
+    if not check.fields_to_compare:
         return None
     # shortcut: every field in fields_to_compare counts, so a different `notes` hides a duplicate;
     # add a separate list of identity fields if that bites.
-    same_values = {f: row["params"][f] for f in check["fields_to_compare"]}
-    window = verilays.parse_duration(check.get("duplicate_window", "1m"))  # rows saved before the window existed
+    same_values = {f: row["params"][f] for f in check.fields_to_compare}
+    window = verilays.parse_duration(check.duplicate_window)
     earlier = conn.execute(
         "SELECT action_id FROM verilays_actions"
         " WHERE action_type = %s AND params @> %s AND status <> 'failed'"

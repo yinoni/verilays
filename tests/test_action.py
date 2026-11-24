@@ -191,3 +191,13 @@ def test_deadline_is_stored_in_deadline_at_default_1m(db):
         for r in db.execute("SELECT action_type, deadline_at - created_at AS wait FROM verilays_actions")
     }
     assert waits == {"ping": datetime.timedelta(minutes=1), "slow_sync": datetime.timedelta(hours=1)}
+
+
+def test_saved_check_fills_missing_keys_and_drops_unknown_ones():
+    from verilays.recipes.postgres import PostgresCheck
+
+    old = {"db": "bookings", "table": "bookings", "lookup_field": "id", "fields_to_compare": ["room"]}
+    newer = {**old, "some_future_option": 1}
+
+    assert PostgresCheck.from_saved(old) == PostgresCheck(**old)  # duplicate_window, exists, expected: defaults
+    assert PostgresCheck.from_saved(newer) == PostgresCheck(**old)

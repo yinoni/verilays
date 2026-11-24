@@ -1,7 +1,27 @@
+from dataclasses import dataclass, fields
+
 from psycopg import sql
 from psycopg.rows import dict_row
 
 from verilays.checks import CheckResult
+
+
+@dataclass(kw_only=True)
+class PostgresCheck:
+    """What action.postgres saves in the action's `check`, and what the worker reads back."""
+    db: str
+    table: str
+    lookup_field: str
+    fields_to_compare: list
+    duplicate_window: str = "1m"
+    exists: bool = True
+    expected: dict | None = None
+
+    @classmethod
+    def from_saved(cls, saved):
+        """Older rows miss newer keys (the defaults fill them); a newer Verilays's extra keys are dropped."""
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in saved.items() if k in known})
 
 
 def pg_row_matches(connect, table, lookup_field, fields_to_compare, exists=True, expected=None):

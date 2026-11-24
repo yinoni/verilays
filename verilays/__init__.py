@@ -1,3 +1,4 @@
+import dataclasses
 import datetime
 import functools
 import inspect
@@ -5,6 +6,7 @@ import logging
 import re
 
 from verilays import store
+from verilays.recipes.postgres import PostgresCheck
 
 log = logging.getLogger(__name__)
 _dsn = None
@@ -101,11 +103,9 @@ def _postgres(tool_name, db, table, lookup_field, fields_to_compare=None, deadli
     if expected is not None and not isinstance(expected, dict):
         raise TypeError(f"expected must be a dict like {{'status': 'cancelled'}}, got {expected!r}")
     parse_duration(duplicate_window)  # a bad value fails here, not in the worker
-    return action(tool_name, "postgres", check={"db": db, "table": table, "lookup_field": lookup_field,
-                                           "fields_to_compare": fields_to_compare,
-                                           "duplicate_window": duplicate_window, "exists": exists,
-                                           "expected": expected},
-                  deadline=deadline)
+    check = PostgresCheck(db=db, table=table, lookup_field=lookup_field, fields_to_compare=fields_to_compare,
+                          duplicate_window=duplicate_window, exists=exists, expected=expected)
+    return action(tool_name, "postgres", check=dataclasses.asdict(check), deadline=deadline)
 
 
 action.postgres = _postgres
