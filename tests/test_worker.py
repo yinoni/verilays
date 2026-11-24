@@ -250,6 +250,18 @@ def test_action_postgres_is_verified_with_only_the_db_env_var(bookings, monkeypa
     assert row["evidence"] == {"key": {"id": 1}}
 
 
+def test_checked_database_connection_refuses_writes(bookings, monkeypatch):
+    monkeypatch.setenv("VERILAYS_POSTGRES_BOOKINGS", DSN)
+    postgres_tool()(room=4, start_time="10:00")
+    connections = {}
+
+    worker._postgres(only_row(bookings)["check"], connections)
+
+    with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
+        connections[DSN].execute("INSERT INTO bookings (room) VALUES (5)")
+    connections[DSN].close()
+
+
 def test_exists_false_is_verified_once_the_row_is_gone_and_mismatch_if_it_stays(bookings, monkeypatch):
     monkeypatch.setenv("VERILAYS_POSTGRES_BOOKINGS", DSN)
     bookings.execute("INSERT INTO bookings (room, start_time) VALUES (4, '10:00'), (5, '11:00')")  # ids 1, 2
