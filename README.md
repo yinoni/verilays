@@ -1,24 +1,10 @@
 # Verilays
 
-An agent's "done" is a self-report. Verilays is an open-source tool that checks your database to see if what the agent claimed actually happened.
+Catch agent actions that report success but didn't happen.
 
-[Demo](#demo) · [Use it on your agent](#use-it-on-your-agent) · [How it works](#how-it-works) · [Statuses](#statuses)
+Agents say "done" when the action never landed, landed with wrong values, landed twice, or was undone later — silently. Verilays wraps an agent's tool, records what it claimed, and reads back from your own system on a schedule to report what actually happened.
 
-Your agent tells a customer "you're booked for Tuesday at 10:00". The tool returned success, the trace looks fine, and nothing reached the database. Or it landed at 11:00. Or it landed twice. Verilays records what each tool claimed, reads the record back from your own Postgres, and tells you which of these happened.
-
-```
-                verified  mismatch  missing  failed  ambiguous
-create_booking         4         1        1       1          1
-
-Needs attention
-e54edf4d  missing      room=noop start_time=10:00  not found after 0:00:40
-75a021a2  mismatch     room=wrong start_time=10:00  start_time: expected 10:00, got 11:00:00
-6b909e47  duplicate    room=dup start_time=10:00  duplicate of 1a88226b, 0s later
-496a4779  ambiguous    room=overwritten start_time=10:00  changed after verified: start_time 10:00 → 12:00:00
-970b8ac4  failed       room=raises start_time=10:00  RuntimeError('booking API down')
-```
-
-That's real output from the demo below.
+Status: pre-v0. Design: `docs/features/v0-sdk/design.md`.
 
 ## Demo
 
@@ -28,7 +14,9 @@ Needs only Docker. From a clean checkout:
 docker compose run --build --rm demo
 ```
 
-It starts Postgres and runs a booking agent through eight scenarios while the worker checks every 3 seconds. After the 40-second deadline it prints `verilays report`. About a minute in all.
+It starts Postgres, recreates a `bookings` table (and clears `verilays_actions`), and runs a booking
+agent through eight scenarios while the worker checks every 3s. After the 40s deadline it prints
+`verilays report`. About a minute in all.
 
 | scenario | what the tool does | outcome |
 |---|---|---|
@@ -36,17 +24,19 @@ It starts Postgres and runs a booking agent through eight scenarios while the wo
 | silent no-op | returns `{"id": 999}`, writes nothing | `missing` at the deadline |
 | wrong values | saves 11:00 instead of 10:00 | `mismatch`, with the diff |
 | late write | returns the id now, writes the row 15s later | `verified` on a later check |
-| duplicate | the same booking twice | the second is listed as a duplicate |
+| duplicate | the same booking twice | both `verified`, the second listed as a duplicate |
 | overwritten | writes the row; someone moves it to 12:00 after it was verified | `ambiguous` |
 | tool raises | raises `RuntimeError` | `failed`; the agent gets the same exception |
 | store down | works, but the action store can't be reached | not recorded; a warning is logged |
 
+A silent no-op is `missing`, not `failed`: `failed` means the tool itself raised.
+
 ## Use it on your agent
 
-**1. Install it**, and start the action store (Verilays' own table, in a Postgres you run):
+**1. Install** it in your agent's project, and start the action store (Verilays' own table):
 
 ```
-pip install git+https://github.com/yinoni/verilays
+uv add --editable /path/to/verilays
 docker compose up -d postgres        # in this repo; the store is on localhost:55432
 ```
 
@@ -65,57 +55,27 @@ def create_order(customer, amount):
     return {"id": new_id}
 ```
 
-The tool must return a dict holding `lookup_field` (`{"id": 42}`). Each name in `fields_to_compare` must be both a tool argument and a column. The worker then finds the row `orders.id = 42` and checks that its `customer` and `amount` match what the agent passed.
+The tool must return a dict holding `lookup_field` (`{"id": 42}`), and each name in
+`fields_to_compare` must be both a tool argument and a column. The worker then finds the row
+`orders.id = 42` and checks that its `customer` and `amount` match what the agent passed.
 
 **3. Run the worker.** `db="shop"` means it reads that database's URL from `VERILAYS_POSTGRES_SHOP`:
 
 ```
 export VERILAYS_DSN=postgresql://verilays:verilays@localhost:55432/verilays
-VERILAYS_POSTGRES_SHOP=postgresql://user:pass@localhost:5432/shop verilays worker --every 10
+VERILAYS_POSTGRES_SHOP=postgresql://user:pass@localhost:5432/shop uv run verilays worker --every 10
 ```
 
 **4. Run your agent, then read the report:**
 
 ```
-verilays report
+uv run verilays report
 ```
-
-## How it works
-
-1. The decorator runs your tool unchanged, then records the tool name, its arguments, its result and a deadline in the action store.
-2. The worker picks up pending actions and looks the record up in your database. It only reads there, so you can give it a read-only user.
-3. It keeps checking until the deadline. Found with the right values is `verified`, different values is `mismatch`, and still not there at the deadline is `missing`.
-
-If Verilays can't record a call, your tool still runs and returns as normal. It never breaks your agent.
-
-Everything runs in your infrastructure: the action store is your Postgres, and the worker is your container (`Dockerfile`, configured with env vars only).
-
-## Statuses
-
-| status | meaning |
-|---|---|
-| `pending` | not found yet; checked again until the deadline |
-| `verified` | the write is there, with the right values |
-| `mismatch` | the write is there, with different values (the report shows the diff) |
-| `missing` | still not found at the deadline |
-| `ambiguous` | verified, then changed or deleted before the deadline |
-| `failed` | the tool raised; the agent got the same exception |
-| `expired` | the check itself kept failing until the deadline, so we never found out |
-| `check_error` | the worker is set up wrong (e.g. a missing `VERILAYS_POSTGRES_*`); retried when it restarts |
-
-An action with the same `fields_to_compare` values as one inside `duplicate_window` (default `1m`) is listed as a duplicate of it.
-
-## What it doesn't do (yet)
-
-- **Postgres only.** For anything else, write the check yourself (below).
-- **It only sees actions that go through a wrapped tool.** If the agent never calls the tool, there's nothing to check.
-- **It checks that the record matches what the agent passed, not whether it was the right action.**
-- **A row that already existed with the same values reads as `verified`.**
-- **The tool has to return the lookup key** (`{"id": 42}`).
 
 ### Not Postgres?
 
-Write the check yourself and pass it as `verify=`. It gets the tool's arguments, its result and the action's row, and returns a `CheckResult`:
+Write the check yourself and pass it as `verify=`. It gets the tool's arguments, its result, and the
+action's row, and returns a `CheckResult`:
 
 ```python
 from verilays.checks import CheckResult
@@ -134,6 +94,15 @@ def create_order(customer, amount): ...
 
 The worker has to import that function, so point it at your module: `verilays worker --app myagent.tools --every 10`.
 
-## Feedback
+## Statuses
 
-Which system should Verilays check next? Something it missed, or caught? [Open an issue](../../issues). We read every one.
+| status | meaning |
+|---|---|
+| `pending` | not found yet; checked again until the deadline |
+| `verified` | the write is there, with the right values |
+| `mismatch` | the write is there, with different values (the report shows the diff) |
+| `missing` | still not found at the deadline |
+| `ambiguous` | verified, then changed or deleted by someone else before the deadline |
+| `failed` | the tool raised; the agent got the same exception |
+| `expired` | the check itself kept failing until the deadline, so we never found out |
+| `check_error` | the worker is set up wrong (e.g. a missing `VERILAYS_POSTGRES_*`); retried when it restarts |
