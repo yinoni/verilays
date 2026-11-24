@@ -23,6 +23,19 @@ services:
       test: ["CMD", "pg_isready", "-U", "admin", "-d", "bookings"]
       interval: 2s
 
+  # docker compose run --build --rm demo  (the profile keeps `up` from starting it)
+  demo:
+    build: .
+    profiles: [demo]
+    command: python -m examples.bookings_demo
+    environment:
+      PYTHONUNBUFFERED: "1"  # so prints and the store-down warning come out in order
+      VERILAYS_DSN: postgresql://verilays:verilays@postgres:5432/verilays
+      VERILAYS_POSTGRES_BOOKINGS: postgresql://admin:admin@postgres-main:5432/bookings
+    depends_on:
+      postgres: {condition: service_healthy}
+      postgres-main: {condition: service_healthy}
+
   verilays-worker:
     build: .
     command: verilays worker --every 10

@@ -7,6 +7,7 @@ COPY --from=ghcr.io/astral-sh/uv:0.9 /uv /bin/uv
 WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 COPY verilays ./verilays
+COPY examples ./examples
 RUN uv sync --frozen --no-dev
 ENV PATH="/app/.venv/bin:$PATH"
 
