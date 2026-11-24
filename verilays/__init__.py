@@ -1,10 +1,13 @@
+import dataclasses
 import datetime
 import functools
 import inspect
 import logging
 import re
+from collections.abc import Callable
 
 from verilays import store
+from verilays.recipes.postgres import PostgresCheck
 
 log = logging.getLogger(__name__)
 _dsn = None
@@ -14,7 +17,7 @@ registry = {}
 _UNITS = {"s": "seconds", "m": "minutes", "h": "hours"}
 
 
-def parse_duration(text):
+def parse_duration(text: str) -> datetime.timedelta:
     """"10s", "5m", "1h" → a timedelta. Anything else raises ValueError."""
     match = re.fullmatch(r"(\d+)([smh])", text) if isinstance(text, str) else None
     if match is None:
@@ -23,7 +26,7 @@ def parse_duration(text):
     return datetime.timedelta(**{_UNITS[unit]: int(amount)})
 
 
-def init(dsn):
+def init(dsn: str) -> None:
     global _dsn
     store.create_table(dsn)
     _dsn = dsn
@@ -38,7 +41,8 @@ def _record(type, system, arguments, result, deadline, status="pending", error=N
     except Exception as e:
         log.warning("insert record error: %s", e)
 
-def action(tool_name, system, *, verify=None, check=None, deadline="1m"):
+def _action(tool_name: str, system: str, *, verify: Callable | None = None, check: dict | None = None,
+           deadline: str = "1m") -> Callable:
     """With check (saved in the row), the worker needs no app code; without it, verify is required.
 
     deadline: how long the worker keeps looking for the write before the action is missing.
@@ -86,8 +90,9 @@ def action(tool_name, system, *, verify=None, check=None, deadline="1m"):
     return decorate
 
 
-def _postgres(tool_name, db, table, lookup_field, fields_to_compare=None, deadline="1m", duplicate_window="1m",
-              exists=True, expected=None):
+def _postgres(tool_name: str, db: str, table: str, lookup_field: str, fields_to_compare: list[str] | None = None,
+              deadline: str = "1m", duplicate_window: str = "1m", exists: bool = True,
+              expected: dict | None = None) -> Callable:
     """The worker reads db's URL from VERILAYS_POSTGRES_<DB> and checks the row with pg_row_matches.
 
     duplicate_window: an earlier call with the same fields_to_compare values within this time
@@ -98,14 +103,25 @@ def _postgres(tool_name, db, table, lookup_field, fields_to_compare=None, deadli
     """
     if fields_to_compare is None:
         fields_to_compare = []
-    if expected is not None and not isinstance(expected, dict):
-        raise TypeError(f"expected must be a dict like {{'status': 'cancelled'}}, got {expected!r}")
-    parse_duration(duplicate_window)  # a bad value fails here, not in the worker
-    return action(tool_name, "postgres", check={"db": db, "table": table, "lookup_field": lookup_field,
-                                           "fields_to_compare": fields_to_compare,
-                                           "duplicate_window": duplicate_window, "exists": exists,
-                                           "expected": expected},
-                  deadline=deadline)
+    # Fail open: a mistake here must not break the tool, only leave it unchecked.
+    try:
+        parse_duration(deadline)
+        parse_duration(duplicate_window)
+        check = PostgresCheck(db=db, table=table, lookup_field=lookup_field, fields_to_compare=fields_to_compare,
+                              duplicate_window=duplicate_window, exists=exists, expected=expected)
+    except (TypeError, ValueError) as e:
+        log.warning("%s runs but is not checked: %s", tool_name, e)
+        return lambda fn: fn
+    return _action(tool_name, "postgres", check=dataclasses.asdict(check), deadline=deadline)
 
 
-action.postgres = _postgres
+class _Action:
+    """verilays.action(...) with your own verify; verilays.action.postgres(...) for a Postgres row.
+
+    A class, not a function with a .postgres attribute, so editors see both signatures.
+    """
+    __call__ = staticmethod(_action)
+    postgres = staticmethod(_postgres)
+
+
+action = _Action()
