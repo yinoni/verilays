@@ -233,3 +233,20 @@ def test_action_postgres_saves_only_the_checked_arguments_and_result_field(db):
     row = db.execute("SELECT params, result FROM verilays_actions").fetchone()
     assert row["params"] == {"order_id": 42, "amount": 30}
     assert row["result"] == {"order_id": 42}
+
+
+def test_run_id_is_the_trace_id_of_the_calling_span(db):
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
+
+    @verilays.action(tool_name="ping", system="test", verify=never_checked)
+    def ping():
+        return None
+
+    ping()  # outside a trace
+    with TracerProvider().get_tracer("test").start_as_current_span("agent run") as span:
+        ping()
+    trace_id = format(span.get_span_context().trace_id, "032x")
+
+    run_ids = [r["run_id"] for r in db.execute("SELECT run_id FROM verilays_actions ORDER BY created_at")]
+    assert run_ids == [None, trace_id]
