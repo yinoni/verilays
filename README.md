@@ -69,6 +69,8 @@ The tool must return a dict holding `lookup_field` (`{"id": 42}`), or take it as
 
 For a delete tool, pass `exists=False`: the action is verified once the row is gone, and a row still there at the deadline is a mismatch.
 
+For a value the tool sets that isn't one of its arguments, pass `expected={"status": "cancelled"}`. A field in both `fields_to_compare` and `expected` is checked against `expected`.
+
 **3. Run the worker.** `db="shop"` means it reads that database's URL from `VERILAYS_POSTGRES_SHOP`:
 
 ```

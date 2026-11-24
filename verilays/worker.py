@@ -51,7 +51,7 @@ def _postgres(check, connections):
     # nullcontext: pg_row_matches's `with` uses the pass's connection without closing it.
     check_row = pg_row_matches(lambda: contextlib.nullcontext(conn), check["table"],
                                check["lookup_field"], check["fields_to_compare"],
-                               check.get("exists", True))  # rows saved before exists was added have no key
+                               check.get("exists", True), check.get("expected"))  # older rows lack these keys
 
     def verify(params, result, ctx):
         try:

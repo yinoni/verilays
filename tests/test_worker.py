@@ -276,6 +276,27 @@ def test_exists_false_is_verified_once_the_row_is_gone_and_mismatch_if_it_stays(
     assert by_id()[2]["evidence"] == {"key": {"id": 2}, "still_exists": True}
 
 
+def test_expected_values_win_over_params_for_the_same_field(bookings, monkeypatch):
+    monkeypatch.setenv("VERILAYS_POSTGRES_BOOKINGS", DSN)
+    bookings.execute("INSERT INTO bookings (room, start_time) VALUES (1, '10:00'), (1, '11:00')")  # ids 1, 2
+
+    @verilays.action.postgres("move_to_hall", db="bookings", table="bookings", lookup_field="id",
+                              fields_to_compare=["room"], expected={"room": 9})
+    def move_to_hall(id, room, works=True):  # room is only a hint; the hall is always room 9
+        with bookings_conn() as conn:
+            conn.execute("UPDATE bookings SET room = %s WHERE id = %s", (9 if works else room, id))
+        return True
+
+    move_to_hall(id=1, room=4)
+    move_to_hall(id=2, room=4, works=False)
+    run_once()
+
+    by_id = {r["params"]["id"]: r for r in bookings.execute("SELECT * FROM verilays_actions")}
+    assert by_id[1]["status"] == "verified"
+    assert by_id[2]["status"] == "mismatch"
+    assert by_id[2]["evidence"]["diff"] == {"room": {"expected": 9, "got": "4"}}
+
+
 def test_missing_db_env_var_is_a_check_error_and_is_not_retried(bookings, monkeypatch, caplog):
     monkeypatch.delenv("VERILAYS_POSTGRES_BOOKINGS", raising=False)
     postgres_tool()(room=4, start_time="10:00")

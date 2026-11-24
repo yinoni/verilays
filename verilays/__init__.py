@@ -86,18 +86,25 @@ def action(tool_name, system, *, verify=None, check=None, deadline="1m"):
     return decorate
 
 
-def _postgres(tool_name, db, table, lookup_field, fields_to_compare, deadline="1m", duplicate_window="1m",
-              exists=True):
+def _postgres(tool_name, db, table, lookup_field, fields_to_compare=None, deadline="1m", duplicate_window="1m",
+              exists=True, expected=None):
     """The worker reads db's URL from VERILAYS_POSTGRES_<DB> and checks the row with pg_row_matches.
 
     duplicate_window: an earlier call with the same fields_to_compare values within this time
     marks the later one as its duplicate.
     exists=False: for a delete tool, verified once the row with lookup_field is gone.
+    expected: {"status": "cancelled"} for values the tool sets that aren't its arguments;
+    a field in both fields_to_compare and expected is checked against expected.
     """
+    if fields_to_compare is None:
+        fields_to_compare = []
+    if expected is not None and not isinstance(expected, dict):
+        raise TypeError(f"expected must be a dict like {{'status': 'cancelled'}}, got {expected!r}")
     parse_duration(duplicate_window)  # a bad value fails here, not in the worker
     return action(tool_name, "postgres", check={"db": db, "table": table, "lookup_field": lookup_field,
                                            "fields_to_compare": fields_to_compare,
-                                           "duplicate_window": duplicate_window, "exists": exists},
+                                           "duplicate_window": duplicate_window, "exists": exists,
+                                           "expected": expected},
                   deadline=deadline)
 
 
