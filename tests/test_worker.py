@@ -201,7 +201,26 @@ def test_result_without_the_lookup_field_stays_pending_with_a_clear_warning(book
     row = only_row(bookings)
     assert row["status"] == "pending"
     assert row["attempts"] == 1
-    assert "result has no field 'id' (got 1)" in caplog.text
+    assert "neither result nor params has field 'id' (result was 1)" in caplog.text
+
+
+def test_lookup_field_falls_back_to_params_when_the_result_lacks_it(bookings):
+    bookings.execute("INSERT INTO bookings (room, start_time) VALUES (4, '10:00')")  # id 1
+
+    @verilays.action(
+        tool_name="move_booking",
+        system="postgres:bookings",
+        verify=recipes.pg_row_matches(bookings_conn, "bookings", lookup_field="id", fields_to_compare=["room"]),
+    )
+    def move_booking(id, room):
+        with bookings_conn() as conn:
+            conn.execute("UPDATE bookings SET room = %s WHERE id = %s", (room, id))
+        return True  # no {"id": ...}, so the id comes from params
+
+    move_booking(id=1, room=7)
+    run_once()
+
+    assert only_row(bookings)["status"] == "verified"
 
 
 def postgres_tool(fields_to_compare=("room", "start_time"), **kwargs):
@@ -229,6 +248,53 @@ def test_action_postgres_is_verified_with_only_the_db_env_var(bookings, monkeypa
     row = only_row(bookings)
     assert row["status"] == "verified"
     assert row["evidence"] == {"key": {"id": 1}, "row": {"room": "4", "start_time": "10:00:00"}}
+
+
+def test_exists_false_is_verified_once_the_row_is_gone_and_mismatch_if_it_stays(bookings, monkeypatch):
+    monkeypatch.setenv("VERILAYS_POSTGRES_BOOKINGS", DSN)
+    bookings.execute("INSERT INTO bookings (room, start_time) VALUES (4, '10:00'), (5, '11:00')")  # ids 1, 2
+
+    @verilays.action.postgres("delete_booking", db="bookings", table="bookings",
+                              lookup_field="id", fields_to_compare=[], exists=False)
+    def delete_booking(id, really=True):
+        if really:
+            with bookings_conn() as conn:
+                conn.execute("DELETE FROM bookings WHERE id = %s", (id,))
+        return True
+
+    delete_booking(id=1)
+    delete_booking(id=2, really=False)  # says it deleted, row is still there
+    deadline = max(r["deadline_at"] for r in bookings.execute("SELECT deadline_at FROM verilays_actions"))
+
+    run_once(now=deadline - SECOND)
+    by_id = lambda: {r["params"]["id"]: r for r in bookings.execute("SELECT * FROM verilays_actions")}
+    assert by_id()[1]["status"] == "verified"
+    assert by_id()[2]["status"] == "pending"
+
+    run_once(now=deadline)
+    assert by_id()[2]["status"] == "mismatch"
+    assert by_id()[2]["evidence"] == {"key": {"id": 2}, "still_exists": True}
+
+
+def test_expected_values_win_over_params_for_the_same_field(bookings, monkeypatch):
+    monkeypatch.setenv("VERILAYS_POSTGRES_BOOKINGS", DSN)
+    bookings.execute("INSERT INTO bookings (room, start_time) VALUES (1, '10:00'), (1, '11:00')")  # ids 1, 2
+
+    @verilays.action.postgres("move_to_hall", db="bookings", table="bookings", lookup_field="id",
+                              fields_to_compare=["room"], expected={"room": 9})
+    def move_to_hall(id, room, works=True):  # room is only a hint; the hall is always room 9
+        with bookings_conn() as conn:
+            conn.execute("UPDATE bookings SET room = %s WHERE id = %s", (9 if works else room, id))
+        return True
+
+    move_to_hall(id=1, room=4)
+    move_to_hall(id=2, room=4, works=False)
+    run_once()
+
+    by_id = {r["params"]["id"]: r for r in bookings.execute("SELECT * FROM verilays_actions")}
+    assert by_id[1]["status"] == "verified"
+    assert by_id[2]["status"] == "mismatch"
+    assert by_id[2]["evidence"]["diff"] == {"room": {"expected": 9, "got": "4"}}
 
 
 def test_missing_db_env_var_is_a_check_error_and_is_not_retried(bookings, monkeypatch, caplog):
