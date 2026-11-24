@@ -86,16 +86,19 @@ def action(tool_name, system, *, verify=None, check=None, deadline="1m"):
     return decorate
 
 
-def _postgres(tool_name, db, table, lookup_field, fields_to_compare, deadline="1m", duplicate_window="1m"):
+def _postgres(tool_name, db, table, lookup_field, fields_to_compare, deadline="1m", duplicate_window="1m",
+              exists=True):
     """The worker reads db's URL from VERILAYS_POSTGRES_<DB> and checks the row with pg_row_matches.
 
     duplicate_window: an earlier call with the same fields_to_compare values within this time
     marks the later one as its duplicate.
+    exists=False: for a delete tool, verified once the row with lookup_field is gone.
     """
     parse_duration(duplicate_window)  # a bad value fails here, not in the worker
     return action(tool_name, "postgres", check={"db": db, "table": table, "lookup_field": lookup_field,
                                            "fields_to_compare": fields_to_compare,
-                                           "duplicate_window": duplicate_window}, deadline=deadline)
+                                           "duplicate_window": duplicate_window, "exists": exists},
+                  deadline=deadline)
 
 
 action.postgres = _postgres

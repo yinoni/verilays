@@ -50,7 +50,8 @@ def _postgres(check, connections):
 
     # nullcontext: pg_row_matches's `with` uses the pass's connection without closing it.
     check_row = pg_row_matches(lambda: contextlib.nullcontext(conn), check["table"],
-                               check["lookup_field"], check["fields_to_compare"])
+                               check["lookup_field"], check["fields_to_compare"],
+                               check.get("exists", True))  # rows saved before exists was added have no key
 
     def verify(params, result, ctx):
         try:
@@ -167,6 +168,9 @@ def _check_row(conn, row, now, connections):
     else:
         evidence = res.evidence
         status = _next_status(row["status"], res.status, past_deadline)
+        # exists=False: a row the tool should have deleted and that outlived the deadline is wrong, not missing.
+        if status == "missing" and res.evidence.get("still_exists"):
+            status = "mismatch"
 
         if status == "ambiguous":
             evidence = {**res.evidence, "changed_after_verify": True}
