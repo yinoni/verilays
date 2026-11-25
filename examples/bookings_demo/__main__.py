@@ -35,9 +35,8 @@ def run(store_dsn, bookings_dsn, deadline="40s", every=3, overwrite_after=8, lat
     verilays.init(store_dsn)
     print("Started from empty bookings and verilays_actions tables.\n")
 
-    @verilays.action.postgres(tool_name="create_booking", db="bookings", table="bookings",
-                              lookup_field="id", fields_to_compare=["room", "start_time"],
-                              deadline=deadline)
+    @verilays.action.postgres(db="bookings", table="bookings", lookup_field="id",
+                              fields_to_compare=["room", "start_time"], deadline=deadline)
     def create_booking(room, start_time, bug=None):
         """The agent's tool. bug picks how it goes wrong; it always says it worked."""
         if bug == "noop":

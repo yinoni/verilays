@@ -17,7 +17,7 @@ def event_exists(params, result, row):
         return CheckResult.mismatch(diff={"start": {"expected": params["start"], "got": event.start}})
     return CheckResult.verified()
 
-@verilays.action("create_event", system="calendar", verify=event_exists, deadline="2m")
+@verilays.action(system="calendar", verify=event_exists, deadline="2m")
 def create_event(title, start): ...
 ```
 
