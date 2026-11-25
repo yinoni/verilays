@@ -32,7 +32,8 @@ def init(dsn: str) -> None:
     store.create_table(dsn)
     _dsn = dsn
 
-def _record(type, system, arguments, result, deadline, status="pending", error=None, check=None, run_id=None):
+def _record(type, system, arguments, result, deadline, status="pending", error=None, check=None, run_id=None,
+            span_id=None):
     if _dsn is None:
         log.warning("%s not recorded: verilays.init(dsn) was never called", type)
         return
@@ -44,14 +45,21 @@ def _record(type, system, arguments, result, deadline, status="pending", error=N
         result = {lookup: result[lookup]} if isinstance(result, dict) and lookup in result else None
     try:
         store.insert_action(_dsn, type, system, arguments, result, deadline, status=status,
-                            error=error, check=check, run_id=run_id)
+                            error=error, check=check, run_id=run_id, span_id=span_id)
     except Exception as e:
         log.warning("insert record error: %s", e)
 
-def _current_trace_id():
-    """The caller's OTel/Langfuse trace id, or None when the tool runs outside a trace."""
+def _current_trace_ids():
+    """The caller's OTel/Langfuse (trace id, span id), or (None, None) when the tool runs outside a trace.
+
+    The span id is the current span: with Langfuse's LangChain handler, the tool call itself.
+    """
     ctx = trace.get_current_span().get_span_context()
-    return format(ctx.trace_id, "032x") if ctx.is_valid else None
+    if not ctx.is_valid:
+        return None, None
+    trace_id = format(ctx.trace_id, "032x")
+    span_id = format(ctx.span_id, "016x")
+    return trace_id, span_id
 
 def _action(tool_name: str, system: str, *, verify: Callable | None = None, check: dict | None = None,
            deadline: str = "1m") -> Callable:
@@ -73,30 +81,32 @@ def _action(tool_name: str, system: str, *, verify: Callable | None = None, chec
         if inspect.iscoroutinefunction(fn):
             @functools.wraps(fn)
             async def wrapper(*args, **kwargs):
-                run_id = _current_trace_id()
+                run_id, span_id = _current_trace_ids()
                 bound = sig.bind(*args, **kwargs)
                 bound.apply_defaults()
                 try:
                     result = await fn(*args, **kwargs)  # the only real difference: await
                 except Exception as e:
                     _record(tool_name, system, dict(bound.arguments), None, deadline, status="failed", error=repr(e),
-                            check=check, run_id=run_id)
+                            check=check, run_id=run_id, span_id=span_id)
                     raise
-                _record(tool_name, system, dict(bound.arguments), result, deadline, check=check, run_id=run_id)
+                _record(tool_name, system, dict(bound.arguments), result, deadline, check=check, run_id=run_id,
+                        span_id=span_id)
                 return result
         else:
             @functools.wraps(fn)
             def wrapper(*args, **kwargs):
-                run_id = _current_trace_id()
+                run_id, span_id = _current_trace_ids()
                 bound = sig.bind(*args, **kwargs)
                 bound.apply_defaults()
                 try:
                     result = fn(*args, **kwargs)
                 except Exception as e:
                     _record(tool_name, system, dict(bound.arguments), None, deadline, status="failed", error=repr(e),
-                            check=check, run_id=run_id)
+                            check=check, run_id=run_id, span_id=span_id)
                     raise
-                _record(tool_name, system, dict(bound.arguments), result, deadline, check=check, run_id=run_id)
+                _record(tool_name, system, dict(bound.arguments), result, deadline, check=check, run_id=run_id,
+                        span_id=span_id)
                 return result
 
         return wrapper

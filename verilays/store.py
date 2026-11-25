@@ -1,14 +1,18 @@
 import datetime
 import json
 from functools import partial
+import logging
 
 import psycopg
 from psycopg.types.json import Jsonb
+
+log = logging.getLogger(__name__)
 
 CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS verilays_actions (
     action_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     run_id text,
+    span_id text,
     action_type text NOT NULL,
     system text NOT NULL,
     entity_key text,
@@ -37,19 +41,21 @@ _jsonb = partial(Jsonb, dumps=partial(json.dumps, default=str))
 
 
 def create_table(dsn):
-    with psycopg.connect(dsn) as conn:
-        conn.execute(CREATE_TABLE)
-        conn.execute(CREATE_INDEX)
-
+    try:
+        with psycopg.connect(dsn) as conn:
+            conn.execute(CREATE_TABLE)
+            conn.execute(CREATE_INDEX)
+    except Exception as e:
+        log.warning("failed to create verilays tables: %s", e)
 
 def insert_action(dsn, action_type, system, params, result, deadline=datetime.timedelta(minutes=1),
-                  status="pending", error=None, check=None, run_id=None):
+                  status="pending", error=None, check=None, run_id=None, span_id=None):
     # shortcut: one connection per call; add a pool if tool-call latency shows it.
     with psycopg.connect(dsn) as conn:
         conn.execute(
             """INSERT INTO verilays_actions
-               (action_type, system, params, result, status, next_check_at, deadline_at, error, "check", run_id)
-               VALUES (%s, %s, %s, %s, %s, now(), now() + %s, %s, %s, %s)""",
+               (action_type, system, params, result, status, next_check_at, deadline_at, error, "check", run_id, span_id)
+               VALUES (%s, %s, %s, %s, %s, now(), now() + %s, %s, %s, %s, %s)""",
             (action_type, system, _jsonb(params), _jsonb(result), status, deadline, error,
-             _jsonb(check) if check else None, run_id),
+             _jsonb(check) if check else None, run_id, span_id),
         )

@@ -21,11 +21,11 @@ def test_init_creates_table_with_every_spec_column_and_is_idempotent(db):
         )
     }
     assert set(columns) == {
-        "action_id", "run_id", "action_type", "system", "entity_key", "params", "result",
+        "action_id", "run_id", "span_id", "action_type", "system", "entity_key", "params", "result",
         "error", "status", "evidence", "check", "duplicate_of", "attempts", "next_check_at",
         "deadline_at", "created_at", "updated_at",
     }
-    assert columns["run_id"] == columns["duplicate_of"] == columns["check"] == "YES"
+    assert columns["run_id"] == columns["span_id"] == columns["duplicate_of"] == columns["check"] == "YES"
 
 
 def test_wrapped_tool_returns_result_unchanged_and_records_one_pending_row(db):
@@ -235,7 +235,7 @@ def test_action_postgres_saves_only_the_checked_arguments_and_result_field(db):
     assert row["result"] == {"order_id": 42}
 
 
-def test_run_id_is_the_trace_id_of_the_calling_span(db):
+def test_run_id_and_span_id_are_the_ids_of_the_calling_span(db):
     from opentelemetry import trace
     from opentelemetry.sdk.trace import TracerProvider
 
@@ -246,7 +246,10 @@ def test_run_id_is_the_trace_id_of_the_calling_span(db):
     ping()  # outside a trace
     with TracerProvider().get_tracer("test").start_as_current_span("agent run") as span:
         ping()
-    trace_id = format(span.get_span_context().trace_id, "032x")
+    span_context = span.get_span_context()
+    trace_id = format(span_context.trace_id, "032x")
+    span_id = format(span_context.span_id, "016x")
 
-    run_ids = [r["run_id"] for r in db.execute("SELECT run_id FROM verilays_actions ORDER BY created_at")]
-    assert run_ids == [None, trace_id]
+    rows = db.execute("SELECT run_id, span_id FROM verilays_actions ORDER BY created_at").fetchall()
+    ids = [(row["run_id"], row["span_id"]) for row in rows]
+    assert ids == [(None, None), (trace_id, span_id)]
