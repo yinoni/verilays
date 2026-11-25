@@ -90,29 +90,31 @@ SCORED_STATUSES = {"verified", "mismatch", "missing", "ambiguous", "expired"}
 
 def _open_platforms():
     platforms = []
-    for name, platform in PLATFORMS.items():
+    for platform in PLATFORMS:
         if platform.env not in os.environ:
             continue
         try:
             platforms.append(platform())
         except Exception as e:
-            log.warning("%s is set but %s didn't start, so no verdicts go there: %r", platform.env, name, e)
+            log.warning("%s is set but %s didn't start, so no verdicts go there: %r", platform.env, platform.name, e)
     return platforms
 
 
-def _send_verdict(platform, row, status):
+def _send_verdict(platform, row, status, evidence):
     # A platform being down must not stop the check; Postgres still has the verdict.
     try:
-        platform.send(row, status)
+        platform.send(row, status, evidence)
     except Exception as e:
-        log.warning("action %s → %s not sent to %s: %r", row["action_id"], status, type(platform).__name__, e)
+        log.warning("action %s → %s not sent to %s: %r", row["action_id"], status, platform.name, e)
+        return
+    log.info("action %s → %s sent to %s", row["action_id"], status, platform.name)
 
 
 def _flush(platform):
     try:
         platform.flush()
     except Exception as e:
-        log.warning("%s flush failed, this pass's verdicts may not have reached it: %r", type(platform).__name__, e)
+        log.warning("%s flush failed, this pass's verdicts may not have reached it: %r", platform.name, e)
 
 
 BATCH_SIZE = 100
@@ -227,7 +229,7 @@ def _check_row(conn, row, now, connections, platforms=()):
     # No run_id: the tool ran outside a trace, so there's nothing to attach the verdict to.
     if status != row["status"] and status in SCORED_STATUSES and row["run_id"]:
         for platform in platforms:
-            _send_verdict(platform, row, status)
+            _send_verdict(platform, row, status, evidence)
 
 
 def _next_status(old_status, checked_status, past_deadline):

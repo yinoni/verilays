@@ -849,6 +849,7 @@ def test_duplicate_window_is_set_per_action(bookings, monkeypatch):
 
 class FakePlatform:
     """Records what the worker sends; turned on by FAKE_PLATFORM_KEY like a real platform's key."""
+    name = "fake"
     env = "FAKE_PLATFORM_KEY"
 
     def __init__(self):
@@ -856,8 +857,9 @@ class FakePlatform:
         self.flushed = False
         opened.append(self)
 
-    def send(self, row, status):
+    def send(self, row, status, evidence):
         self.sent.append((row["run_id"], row["span_id"], status))
+        self.evidence = evidence
 
     def flush(self):
         self.flushed = True
@@ -870,7 +872,7 @@ opened = []
 def platform(monkeypatch):
     """The fake platform, with its env var set; yields the list of instances the passes opened."""
     opened.clear()
-    monkeypatch.setattr(worker, "PLATFORMS", {"fake": FakePlatform})
+    monkeypatch.setattr(worker, "PLATFORMS", [FakePlatform])
     monkeypatch.setenv("FAKE_PLATFORM_KEY", "secret")
     yield opened
 
@@ -879,16 +881,18 @@ def in_trace(db, run_id="a" * 32, span_id="b" * 16):
     db.execute("UPDATE verilays_actions SET run_id = %s, span_id = %s", (run_id, span_id))
 
 
-def test_verdict_is_sent_once_on_the_tool_calls_span_and_flushed(bookings, platform):
+def test_verdict_is_sent_once_on_the_tool_calls_span_and_flushed(bookings, platform, caplog):
     book_tool()(room=4, start_time="10:00")
     in_trace(bookings)
     deadline = only_row(bookings)["deadline_at"]
 
-    run_once(now=deadline - 30 * SECOND)
-    run_once(now=deadline - 20 * SECOND)    # rechecked, still verified: nothing new to send
+    with caplog.at_level(logging.INFO, logger="verilays"):
+        run_once(now=deadline - 30 * SECOND)
+        run_once(now=deadline - 20 * SECOND)    # rechecked, still verified: nothing new to send
 
     first, second = platform
     assert first.sent == [("a" * 32, "b" * 16, "verified")]
+    assert "→ verified sent to fake" in caplog.text
     assert second.sent == []
     assert first.flushed and second.flushed
 
@@ -935,7 +939,7 @@ def test_platform_without_its_env_var_is_not_opened(bookings, platform, monkeypa
 
 
 def test_platform_that_fails_to_send_does_not_stop_the_check(bookings, platform, monkeypatch, caplog):
-    def send(self, row, status):
+    def send(self, row, status, evidence):
         raise ConnectionError("langfuse down")
 
     monkeypatch.setattr(FakePlatform, "send", send)
@@ -945,4 +949,15 @@ def test_platform_that_fails_to_send_does_not_stop_the_check(bookings, platform,
     run_once()
 
     assert only_row(bookings)["status"] == "verified"
-    assert "not sent to FakePlatform: ConnectionError('langfuse down')" in caplog.text
+    assert "not sent to fake: ConnectionError('langfuse down')" in caplog.text
+
+
+def test_mismatch_sends_this_checks_evidence_with_the_diff(bookings, platform):
+    book_tool()(room=4, start_time="10:00")
+    in_trace(bookings)
+    bookings.execute("UPDATE bookings SET room = 9")
+
+    run_once()
+
+    assert platform[0].sent[0][2] == "mismatch"
+    assert platform[0].evidence["diff"] == {"room": {"expected": 4, "got": "9"}}  # the recipe compares as text
