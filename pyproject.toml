@@ -10,6 +10,10 @@ dependencies = [
     "opentelemetry-api>=1.45.2",
 ]
 
+[project.optional-dependencies]
+# The worker sends each verdict to Langfuse as a score when LANGFUSE_SECRET_KEY is set.
+langfuse = ["langfuse>=3"]
+
 [project.scripts]
 verilays = "verilays.cli:main"
 

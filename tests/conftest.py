@@ -1,11 +1,13 @@
+import os
+
 import psycopg
 import pytest
 from psycopg.rows import dict_row
 
 import verilays
 
-# docker compose up -d
-DSN = "postgresql://verilays:verilays@localhost:55432/verilays"
+# docker compose up -d; VERILAYS_TEST_DSN points the tests at another Postgres (they drop its tables).
+DSN = os.environ.get("VERILAYS_TEST_DSN", "postgresql://verilays:verilays@localhost:55432/verilays")
 
 
 @pytest.fixture
