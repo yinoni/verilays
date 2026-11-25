@@ -8,6 +8,7 @@ from collections.abc import Callable
 
 from verilays import store
 from verilays.recipes.postgres import PostgresCheck
+from opentelemetry import trace
 
 log = logging.getLogger(__name__)
 _dsn = None
@@ -31,7 +32,7 @@ def init(dsn: str) -> None:
     store.create_table(dsn)
     _dsn = dsn
 
-def _record(type, system, arguments, result, deadline, status="pending", error=None, check=None):
+def _record(type, system, arguments, result, deadline, status="pending", error=None, check=None, run_id=None):
     if _dsn is None:
         log.warning("%s not recorded: verilays.init(dsn) was never called", type)
         return
@@ -43,9 +44,14 @@ def _record(type, system, arguments, result, deadline, status="pending", error=N
         result = {lookup: result[lookup]} if isinstance(result, dict) and lookup in result else None
     try:
         store.insert_action(_dsn, type, system, arguments, result, deadline, status=status,
-                            error=error, check=check)
+                            error=error, check=check, run_id=run_id)
     except Exception as e:
         log.warning("insert record error: %s", e)
+
+def _current_trace_id():
+    """The caller's OTel/Langfuse trace id, or None when the tool runs outside a trace."""
+    ctx = trace.get_current_span().get_span_context()
+    return format(ctx.trace_id, "032x") if ctx.is_valid else None
 
 def _action(tool_name: str, system: str, *, verify: Callable | None = None, check: dict | None = None,
            deadline: str = "1m") -> Callable:
@@ -67,28 +73,30 @@ def _action(tool_name: str, system: str, *, verify: Callable | None = None, chec
         if inspect.iscoroutinefunction(fn):
             @functools.wraps(fn)
             async def wrapper(*args, **kwargs):
+                run_id = _current_trace_id()
                 bound = sig.bind(*args, **kwargs)
                 bound.apply_defaults()
                 try:
                     result = await fn(*args, **kwargs)  # the only real difference: await
                 except Exception as e:
                     _record(tool_name, system, dict(bound.arguments), None, deadline, status="failed", error=repr(e),
-                            check=check)
+                            check=check, run_id=run_id)
                     raise
-                _record(tool_name, system, dict(bound.arguments), result, deadline, check=check)
+                _record(tool_name, system, dict(bound.arguments), result, deadline, check=check, run_id=run_id)
                 return result
         else:
             @functools.wraps(fn)
             def wrapper(*args, **kwargs):
+                run_id = _current_trace_id()
                 bound = sig.bind(*args, **kwargs)
                 bound.apply_defaults()
                 try:
                     result = fn(*args, **kwargs)
                 except Exception as e:
                     _record(tool_name, system, dict(bound.arguments), None, deadline, status="failed", error=repr(e),
-                            check=check)
+                            check=check, run_id=run_id)
                     raise
-                _record(tool_name, system, dict(bound.arguments), result, deadline, check=check)
+                _record(tool_name, system, dict(bound.arguments), result, deadline, check=check, run_id=run_id)
                 return result
 
         return wrapper

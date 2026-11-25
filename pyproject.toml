@@ -4,13 +4,20 @@ version = "0.0.1"
 description = "Catch agent actions that report success but didn't happen"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["psycopg[binary]>=3.2", "click>=8.1"]
+dependencies = [
+    "psycopg[binary]>=3.2",
+    "click>=8.1",
+    "opentelemetry-api>=1.45.2",
+]
 
 [project.scripts]
 verilays = "verilays.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8"]
+dev = [
+    "opentelemetry-sdk>=1.45.2",
+    "pytest>=8",
+]
 
 [build-system]
 requires = ["hatchling"]
