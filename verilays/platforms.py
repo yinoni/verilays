@@ -12,12 +12,23 @@ Add it to PLATFORMS below.
 """
 
 
-def describe(evidence):
-    """The evidence as lines a person reads, e.g. "Looked up id=1" / "room: expected 4, got 9".
+# The first line of a verdict's description: what the status means for the person reading the trace.
+STATUS_SENTENCES = {
+    "verified": "Verified: the record is in the system, as the tool reported",
+    "mismatch": "Mismatch: the record in the system doesn't match what the tool was expected to do",
+    "missing": "Missing: we didn't find the record in the system before the deadline",
+    "ambiguous": "Ambiguous: the record matched at first, then changed after it was verified",
+    "expired": "Expired: the check kept failing until the deadline, so we couldn't tell",
+}
+
+
+def describe(status, evidence):
+    """The verdict as lines a person reads: the status's sentence, then the evidence, e.g.
+    "Mismatch: ..." / "Looked up id=1" / "room: expected 4, got 9".
     Keys a recipe doesn't set (a custom check's evidence) are shown as "key: value".
     """
-    lines = []
-    for name, value in evidence.items():
+    lines = [STATUS_SENTENCES.get(status, status)]
+    for name, value in (evidence or {}).items():
         # A custom check can use these names for anything, so only the recipe's shapes get a sentence.
         if name == "key" and isinstance(value, dict):
             lookup = ", ".join(f"{field}={field_value}" for field, field_value in value.items())
@@ -30,7 +41,7 @@ def describe(evidence):
         elif name == "still_exists":
             lines.append("The row still exists, but the tool should have deleted it")
         elif name == "changed_after_verify":
-            lines.append("It matched at first, then changed after it was verified")
+            pass  # the ambiguous sentence already says it
         elif name == "rows" and value == ">1":
             lines.append("More than one row matches")
         else:
@@ -53,7 +64,7 @@ class _Langfuse:
         # score_id = action_id: a later verdict for the same action replaces the earlier one.
         action_id = str(row["action_id"])
         # On a mismatch this includes each field's expected and got: real row values.
-        comment = describe(evidence) if evidence else None
+        comment = describe(status, evidence)
         self.client.create_score(name="verilays", value=status, data_type="CATEGORICAL",
                                  trace_id=row["run_id"], observation_id=row["span_id"], score_id=action_id,
                                  comment=comment)
