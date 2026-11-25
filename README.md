@@ -2,7 +2,7 @@
 
 An agent's "done" is a self-report. Verilays is an open-source tool that checks your database to see if what the agent claimed actually happened.
 
-[Demo](#demo) · [Use it on your agent](#use-it-on-your-agent) · [How it works](#how-it-works) · [Statuses](#statuses)
+[Demo](#demo) · [Use it on your agent](#use-it-on-your-agent) · [How it works](#how-it-works) · [Statuses](#statuses) · [What's next](#whats-next)
 
 Your agent tells a customer "you're booked for Tuesday at 10:00". The tool returned success, the trace looks fine, and nothing reached the database. Or it landed at 11:00. Or it landed twice. Verilays records what each tool claimed, reads the record back from your own Postgres, and tells you which of these happened.
 
@@ -42,6 +42,14 @@ It starts Postgres and runs a booking agent through eight scenarios while the wo
 | store down | works, but the action store can't be reached | not recorded; a warning is logged |
 
 ## Use it on your agent
+
+**Let your coding agent do it.** Add the skill, then ask Claude Code, Cursor or Codex to add Verilays to your agent. It finds the tools that change something, wraps them, starts the worker, and runs one action through until it comes back `verified`.
+
+```
+npx skills add yinoni/verilays
+```
+
+Or by hand:
 
 **1. Install it**, and start the action store (Verilays' own table, in a Postgres you run):
 
@@ -86,15 +94,26 @@ VERILAYS_POSTGRES_SHOP=postgresql://user:pass@localhost:5432/shop verilays worke
 verilays report
 ```
 
+### Using Langfuse?
+
+When a tool runs inside a Langfuse trace, its action is linked to that trace and tool call. Install the extra and give the worker your Langfuse keys:
+
+```
+pip install "verilays[langfuse] @ git+https://github.com/yinoni/verilays"
+export LANGFUSE_PUBLIC_KEY=pk-lf-... LANGFUSE_SECRET_KEY=sk-lf-... LANGFUSE_BASE_URL=https://cloud.langfuse.com
+```
+
+Each verdict then shows up in Langfuse as a `verilays` score on the tool call, with a line saying what happened: `Missing: we didn't find the record in the system before the deadline`.
+
 ## How it works
 
-1. The decorator runs your tool unchanged, then records the tool name, its arguments, its result and a deadline in the action store.
+1. The decorator runs your tool unchanged, then records the tool name, a deadline and what the worker needs to check: for `action.postgres`, only the lookup field and the compared fields. A custom `verify=` check also saves the tool's arguments and result.
 2. The worker picks up pending actions and looks the record up in your database. It opens that connection read-only, so Postgres refuses any write from it even if the user in the URL could write. A read-only user is still a good idea.
 3. It keeps checking until the deadline. Found with the right values is `verified`, different values is `mismatch`, and still not there at the deadline is `missing`.
 
 If Verilays can't record a call, your tool still runs and returns as normal. It never breaks your agent.
 
-Everything runs in your infrastructure: the action store is your Postgres, and the worker is your container (`Dockerfile`, configured with env vars only).
+Everything runs in your infrastructure: the action store is your Postgres, and the worker is your container (`Dockerfile`, configured with env vars only). Nothing is sent to us. If you turn on Langfuse, verdicts go to your own Langfuse project.
 
 ## Statuses
 
@@ -140,6 +159,10 @@ def create_order(customer, amount): ...
 
 The worker has to import that function, so point it at your module: `verilays worker --app myagent.tools --every 10`.
 
-## Feedback
+## What's next
 
-Which system should Verilays check next? Something it missed, or caught? [Open an issue](../../issues). We read every one.
+What we plan to build is in the [issues](../../issues): checks for more systems, more ways to catch a bad action, and more ways to see the results. Give a 👍 to the ones you want, and we build the most wanted first.
+
+Something Verilays missed, or caught? A system it should check? [Open an issue](../../issues). We read every one.
+
+Want to build one yourself? [CONTRIBUTING.md](CONTRIBUTING.md) shows how, and issues labelled `good first issue` are a good place to start.
