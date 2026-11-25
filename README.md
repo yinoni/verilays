@@ -1,4 +1,5 @@
-# Verilays
+# Verilays <img width="800" height="800" alt="logo" src="https://github.com/user-attachments/assets/0e83b458-6d15-45b9-977d-3d520dea0986" />
+
 
 An agent's "done" is a self-report. Verilays is an open-source tool that checks your database to see if what the agent claimed actually happened.
 
