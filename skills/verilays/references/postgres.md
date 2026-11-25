@@ -7,9 +7,8 @@ description: A tool that inserts, updates or deletes a row in Postgres (includin
 Use `@verilays.action.postgres(...)`. The worker finds the row and compares it with what the agent passed. No check code is needed.
 
 ```python
-@verilays.action.postgres(tool_name="create_booking", db="bookings", table="bookings",
-                          lookup_field="id", fields_to_compare=["room", "start_time"],
-                          deadline="2m")
+@verilays.action.postgres(db="bookings", table="bookings", lookup_field="id",
+                          fields_to_compare=["room", "start_time"], deadline="2m")
 def create_booking(room, start_time):
     ...
     return {"id": new_id}

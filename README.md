@@ -68,15 +68,16 @@ import verilays
 
 verilays.init("postgresql://verilays:verilays@localhost:55432/verilays")
 
-@verilays.action.postgres(tool_name="create_order", db="shop", table="orders",
-                          lookup_field="id", fields_to_compare=["customer", "amount"],
-                          deadline="2m")
+@verilays.action.postgres(db="shop", table="orders", lookup_field="id",
+                          fields_to_compare=["customer", "amount"], deadline="2m")
 def create_order(customer, amount):
     ...
     return {"id": new_id}
 ```
 
 The tool must return a dict holding `lookup_field` (`{"id": 42}`), or take it as an argument (`cancel_order(id)`) when it doesn't return it. Each name in `fields_to_compare` must be both a tool argument and a column. The worker then finds the row `orders.id = 42` and checks that its `customer` and `amount` match what the agent passed.
+
+The action is recorded under the function's name, `create_order`. If your agent knows the tool by another name, pass it first: `@verilays.action.postgres("place_order", db=...)`.
 
 For a delete tool, pass `exists=False`: the action is verified once the row is gone, and a row still there at the deadline is a mismatch.
 
@@ -158,7 +159,7 @@ def order_exists(params, result, row):
         return CheckResult.mismatch(diff={"amount": {"expected": params["amount"], "got": order["amount"]}})
     return CheckResult.verified()
 
-@verilays.action("create_order", system="shop-api", verify=order_exists, deadline="2m")
+@verilays.action(system="shop-api", verify=order_exists, deadline="2m")
 def create_order(customer, amount): ...
 ```
 

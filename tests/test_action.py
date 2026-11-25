@@ -145,6 +145,28 @@ def test_action_postgres_saves_its_check_in_the_row_and_needs_no_verify(db):
     assert verilays.registry == {}
 
 
+def test_tool_name_defaults_to_the_function_name(db):
+    @verilays.action.postgres(db="bookings", table="bookings", lookup_field="id")
+    def create_booking(room):
+        return {"id": 1}
+
+    @verilays.action.postgres("book_room", db="bookings", table="bookings", lookup_field="id")
+    def _book_room_impl(room):
+        return {"id": 2}
+
+    @verilays.action(system="crm", verify=never_checked)
+    def send_email(to):
+        return {"id": 3}
+
+    create_booking(4)
+    _book_room_impl(4)
+    send_email("a@example.com")
+
+    rows = db.execute("SELECT action_type FROM verilays_actions ORDER BY created_at").fetchall()
+    assert [row["action_type"] for row in rows] == ["create_booking", "book_room", "send_email"]
+    assert "send_email" in verilays.registry
+
+
 def test_tool_called_before_init_still_returns_and_warns_clearly(monkeypatch, caplog):
     monkeypatch.setattr(verilays, "_dsn", None)
 
@@ -213,7 +235,7 @@ def test_saved_check_fills_missing_keys_and_drops_unknown_ones():
 def test_action_postgres_with_a_bad_setting_still_runs_the_tool_unchecked(db, caplog, bad, message):
     args = {"db": "shop", "table": "orders", "lookup_field": "id", "fields_to_compare": [], **bad}
 
-    @verilays.action.postgres("cancel_order", **args)
+    @verilays.action.postgres(**args)  # no tool_name: the warning names the function
     def cancel_order(id):
         return "cancelled"
 

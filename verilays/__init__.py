@@ -61,9 +61,11 @@ def _current_trace_ids():
     span_id = format(ctx.span_id, "016x")
     return trace_id, span_id
 
-def _action(tool_name: str, system: str, *, verify: Callable | None = None, check: dict | None = None,
+def _action(tool_name: str | None = None, *, system: str, verify: Callable | None = None, check: dict | None = None,
            deadline: str = "1m") -> Callable:
     """With check (saved in the row), the worker needs no app code; without it, verify is required.
+
+    tool_name: the function's name when left out; pass it when the agent knows the tool by another name.
 
     deadline: how long the worker keeps looking for the write before the action is missing.
     """
@@ -74,9 +76,10 @@ def _action(tool_name: str, system: str, *, verify: Callable | None = None, chec
         inspect.signature(verify).bind(None, None, None)  # the worker calls verify(params, result, row)
 
     def decorate(fn):
+        name = tool_name or fn.__name__
         sig = inspect.signature(fn)
         if verify is not None:
-            registry[tool_name] = {"system": system, "verify": verify}
+            registry[name] = {"system": system, "verify": verify}
 
         if inspect.iscoroutinefunction(fn):
             @functools.wraps(fn)
@@ -87,10 +90,10 @@ def _action(tool_name: str, system: str, *, verify: Callable | None = None, chec
                 try:
                     result = await fn(*args, **kwargs)  # the only real difference: await
                 except Exception as e:
-                    _record(tool_name, system, dict(bound.arguments), None, deadline, status="failed", error=repr(e),
+                    _record(name, system, dict(bound.arguments), None, deadline, status="failed", error=repr(e),
                             check=check, run_id=run_id, span_id=span_id)
                     raise
-                _record(tool_name, system, dict(bound.arguments), result, deadline, check=check, run_id=run_id,
+                _record(name, system, dict(bound.arguments), result, deadline, check=check, run_id=run_id,
                         span_id=span_id)
                 return result
         else:
@@ -102,10 +105,10 @@ def _action(tool_name: str, system: str, *, verify: Callable | None = None, chec
                 try:
                     result = fn(*args, **kwargs)
                 except Exception as e:
-                    _record(tool_name, system, dict(bound.arguments), None, deadline, status="failed", error=repr(e),
+                    _record(name, system, dict(bound.arguments), None, deadline, status="failed", error=repr(e),
                             check=check, run_id=run_id, span_id=span_id)
                     raise
-                _record(tool_name, system, dict(bound.arguments), result, deadline, check=check, run_id=run_id,
+                _record(name, system, dict(bound.arguments), result, deadline, check=check, run_id=run_id,
                         span_id=span_id)
                 return result
 
@@ -114,9 +117,9 @@ def _action(tool_name: str, system: str, *, verify: Callable | None = None, chec
     return decorate
 
 
-def _postgres(tool_name: str, db: str, table: str, lookup_field: str, fields_to_compare: list[str] | None = None,
-              deadline: str = "1m", duplicate_window: str = "1m", exists: bool = True,
-              expected: dict | None = None) -> Callable:
+def _postgres(tool_name: str | None = None, *, db: str, table: str, lookup_field: str,
+              fields_to_compare: list[str] | None = None, deadline: str = "1m", duplicate_window: str = "1m",
+              exists: bool = True, expected: dict | None = None) -> Callable:
     """The worker reads db's URL from VERILAYS_POSTGRES_<DB> and checks the row with pg_row_matches.
 
     duplicate_window: an earlier call with the same fields_to_compare values within this time
@@ -134,9 +137,15 @@ def _postgres(tool_name: str, db: str, table: str, lookup_field: str, fields_to_
         check = PostgresCheck(db=db, table=table, lookup_field=lookup_field, fields_to_compare=fields_to_compare,
                               duplicate_window=duplicate_window, exists=exists, expected=expected)
     except (TypeError, ValueError) as e:
-        log.warning("%s runs but is not checked: %s", tool_name, e)
-        return lambda fn: fn
-    return _action(tool_name, "postgres", check=dataclasses.asdict(check), deadline=deadline)
+        error = e  # `e` is cleared when the except block ends
+
+        def leave_unchecked(fn):
+            name = tool_name or fn.__name__
+            log.warning("%s runs but is not checked: %s", name, error)
+            return fn
+
+        return leave_unchecked
+    return _action(tool_name, system="postgres", check=dataclasses.asdict(check), deadline=deadline)
 
 
 class _Action:
