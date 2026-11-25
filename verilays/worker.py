@@ -9,6 +9,7 @@ from psycopg.rows import dict_row
 
 import verilays
 from verilays.checks import CheckResult
+from verilays.platforms import PLATFORMS
 from verilays.recipes import pg_row_matches
 from verilays.recipes.postgres import PostgresCheck
 from verilays.store import _jsonb
@@ -83,6 +84,39 @@ def _verify_from_check(row, connections):
     return fn(row["check"], connections)
 
 
+# Verdicts on the agent. pending and check_error aren't; failed is written by the SDK and never checked.
+SCORED_STATUSES = {"verified", "mismatch", "missing", "ambiguous", "expired"}
+
+
+def _open_platforms():
+    platforms = []
+    for platform in PLATFORMS:
+        if platform.env not in os.environ:
+            continue
+        try:
+            platforms.append(platform())
+        except Exception as e:
+            log.warning("%s is set but %s didn't start, so no verdicts go there: %r", platform.env, platform.name, e)
+    return platforms
+
+
+def _send_verdict(platform, row, status, evidence):
+    # A platform being down must not stop the check; Postgres still has the verdict.
+    try:
+        platform.send(row, status, evidence)
+    except Exception as e:
+        log.warning("action %s → %s not sent to %s: %r", row["action_id"], status, platform.name, e)
+        return
+    log.info("action %s → %s sent to %s", row["action_id"], status, platform.name)
+
+
+def _flush(platform):
+    try:
+        platform.flush()
+    except Exception as e:
+        log.warning("%s flush failed, this pass's verdicts may not have reached it: %r", platform.name, e)
+
+
 BATCH_SIZE = 100
 
 
@@ -99,6 +133,7 @@ def run_once(now=None):
     # A row that stays pending must not come back in this pass, so each batch starts after the last one.
     after = (datetime.datetime.min.replace(tzinfo=datetime.timezone.utc), uuid.UUID(int=0))
     connections = {}
+    platforms = _open_platforms()
     try:
         with psycopg.connect(verilays._dsn, row_factory=dict_row) as conn:
             if now is None:
@@ -120,7 +155,7 @@ def run_once(now=None):
                     # shortcut: one query per row; batch per table (WHERE id = ANY(...))
                     # when pending rows reach the thousands.
                     for row in rows:
-                        _check_row(conn, row, now, connections)
+                        _check_row(conn, row, now, connections, platforms)
                 if len(rows) < BATCH_SIZE:
                     return
                 last = rows[-1]
@@ -129,9 +164,11 @@ def run_once(now=None):
         for checked_db in connections.values():
             if checked_db is not None:
                 checked_db.close()
+        for platform in platforms:
+            _flush(platform)
 
 
-def _check_row(conn, row, now, connections):
+def _check_row(conn, row, now, connections, platforms=()):
     entry = verilays.registry.get(row["action_type"])
     if row["check"] is None and entry is None:
         log.warning("action %s/%s skipped: type not registered",
@@ -187,6 +224,12 @@ def _check_row(conn, row, now, connections):
         (status, error, _jsonb(evidence) if evidence is not None else None, duplicate_of, attempt,
          now, row["action_id"]),
     )
+
+    # Only on a change: a verified row is rechecked every pass until its deadline.
+    # No run_id: the tool ran outside a trace, so there's nothing to attach the verdict to.
+    if status != row["status"] and status in SCORED_STATUSES and row["run_id"]:
+        for platform in platforms:
+            _send_verdict(platform, row, status, evidence)
 
 
 def _next_status(old_status, checked_status, past_deadline):
