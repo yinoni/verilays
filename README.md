@@ -1,3 +1,6 @@
+<img width="2256" height="382" alt="cover-company_1" src="https://github.com/user-attachments/assets/ae9509c8-b8d8-4608-b3df-6971618f8da5" />
+
+
 # Verilays
 
 An agent's "done" is a self-report. Verilays is an open-source tool that checks your database to see if what the agent claimed actually happened.
