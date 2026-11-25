@@ -105,6 +105,8 @@ export LANGFUSE_PUBLIC_KEY=pk-lf-... LANGFUSE_SECRET_KEY=sk-lf-... LANGFUSE_BASE
 
 Each verdict then shows up in Langfuse as a `verilays` score on the tool call, with a line saying what happened: `Missing: we didn't find the record in the system before the deadline`.
 
+On a `mismatch`, that line includes the real values from your database (`start_time: expected 10:00, got 11:00:00`), so they're sent to Langfuse too.
+
 ## How it works
 
 1. The decorator runs your tool unchanged, then records the tool name, a deadline and what the worker needs to check: for `action.postgres`, only the lookup field and the compared fields. A custom `verify=` check also saves the tool's arguments and result.
@@ -166,3 +168,7 @@ What we plan to build is in the [issues](../../issues): checks for more systems,
 Something Verilays missed, or caught? A system it should check? [Open an issue](../../issues). We read every one.
 
 Want to build one yourself? [CONTRIBUTING.md](CONTRIBUTING.md) shows how, and issues labelled `good first issue` are a good place to start.
+
+## License
+
+[Apache-2.0](LICENSE)

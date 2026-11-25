@@ -3,6 +3,7 @@ name = "verilays"
 version = "0.0.1"
 description = "Catch agent actions that report success but didn't happen"
 readme = "README.md"
+license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = [
     "psycopg[binary]>=3.2",
@@ -24,7 +25,7 @@ dev = [
 ]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]  # 1.27+ reads `license = "Apache-2.0"`
 build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
