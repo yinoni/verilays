@@ -36,8 +36,8 @@ The demo runs with `docker compose run --build --rm demo`.
 Where things live:
 
 - `verilays/__init__.py`: `init`, `action(...)` and `action.postgres(...)`, the decorators people write.
-- `verilays/recipes/postgres.py`: `PostgresCheck`, what the decorator saves, and `pg_row_matches`, the lookup.
-- `verilays/worker.py`: the check loop. `SYSTEMS` maps a system name to the function that turns a saved check into a check.
+- `verilays/systems/`: one file per checked system. `systems/postgres.py` has `PostgresCheck`, what the decorator saves; `pg_row_matches`, the lookup; and `verify_from_saved`, which opens the connection from `VERILAYS_POSTGRES` (or `VERILAYS_POSTGRES_<DB>`). `SYSTEMS` in `systems/__init__.py` maps a system name to its `verify_from_saved`.
+- `verilays/worker.py`: the check loop.
 - `verilays/store.py`: the action store table. `verilays/report.py`: `verilays report`.
 - `docs/features/v0-sdk/design.md`: the design, including statuses and deadlines.
 

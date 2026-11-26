@@ -21,3 +21,11 @@ class CheckResult:
     @classmethod
     def ambiguous(cls, **evidence):
         return cls("ambiguous", evidence)
+
+
+class ConfigError(Exception):
+    """The worker is set up wrong (a missing env var, an unknown system); retrying won't help."""
+
+
+class DatabaseDown(Exception):
+    """A checked database already failed to answer in this pass; its rows wait for the next pass."""

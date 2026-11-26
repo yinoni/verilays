@@ -24,7 +24,7 @@ The developer supplies the check (usually a recipe, sometimes a function). Veril
 
 ```python
 import verilays
-from verilays import recipes
+from verilays.systems.postgres import pg_row_matches
 
 verilays.init(dsn="postgres://...")          # where Verilays keeps its own table
 
@@ -32,7 +32,7 @@ verilays.init(dsn="postgres://...")          # where Verilays keeps its own tabl
     type="create_booking",
     system="postgres:bookings",              # label only
     entity_key=lambda p, r: f"booking:{p['book_id']}",
-    verify=recipes.pg_row_matches(
+    verify=pg_row_matches(
         connect=get_bookings_conn,           # customer's own connection factory, per action
         table="bookings",
         lookup_field="id",                   # find the row where column id = result["id"]
@@ -144,7 +144,7 @@ pytest + Postgres via docker compose, one-command demo on a `bookings` table. De
 
 ## Layout and stack
 
-`verilays/{__init__,store,checks,scheduler,worker,report}.py`, `verilays/recipes/postgres.py`, `examples/bookings_demo/`, `tests/`, `pyproject.toml`. Python 3.11+, psycopg 3, click. Any other dependency needs approval.
+`verilays/{__init__,store,checks,scheduler,worker,report}.py`, `verilays/systems/postgres.py`, `examples/bookings_demo/`, `tests/`, `pyproject.toml`. Python 3.11+, psycopg 3, click. Any other dependency needs approval.
 
 ## Cut from v0
 

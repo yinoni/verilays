@@ -1,4 +1,3 @@
-import contextlib
 import datetime
 import logging
 import os
@@ -8,75 +7,13 @@ import psycopg
 from psycopg.rows import dict_row
 
 import verilays
-from verilays.checks import CheckResult
+from verilays.checks import CheckResult, ConfigError, DatabaseDown
 from verilays.platforms import PLATFORMS
-from verilays.recipes import pg_row_matches
-from verilays.recipes.postgres import PostgresCheck
+from verilays.systems import SYSTEMS
+from verilays.systems.postgres import PostgresCheck
 from verilays.store import _jsonb
 
 log = logging.getLogger("verilays")
-
-
-class ConfigError(Exception):
-    """The worker is set up wrong (a missing env var, an unknown system); retrying won't help."""
-
-
-class DatabaseDown(Exception):
-    """A checked database already failed to answer in this pass; its rows wait for the next pass."""
-
-
-# A check is a lookup by key, normally a few ms; past this the database is stuck, not slow.
-CHECK_TIMEOUT_SECONDS = 5
-
-
-def _postgres(saved_check, connections):
-    check = PostgresCheck.from_saved(saved_check)
-    # db names one of several databases; without it, the one database is in VERILAYS_POSTGRES.
-    if check.db is None:
-        env = "VERILAYS_POSTGRES"
-    else:
-        db_name = check.db.upper()
-        env = f"VERILAYS_POSTGRES_{db_name}"
-
-    if env not in os.environ:
-        raise ConfigError(f"{env} is not set; set it to the URL of the database to check")
-
-    url = os.environ[env]
-    if url in connections and connections[url] is None:
-        raise DatabaseDown(f"the database in {env} didn't answer earlier in this pass")
-    if url not in connections:
-        try:
-            # autocommit: a failed query (say, a wrong table) must not abort the next row's check.
-            # read_only: Postgres refuses writes here even if the URL's user is allowed to write.
-            connections[url] = psycopg.connect(
-                url, autocommit=True, connect_timeout=CHECK_TIMEOUT_SECONDS,
-                options=f"-c statement_timeout={CHECK_TIMEOUT_SECONDS}s -c default_transaction_read_only=on")
-        except psycopg.OperationalError:
-            connections[url] = None
-            raise
-    conn = connections[url]
-
-    # nullcontext: pg_row_matches's `with` uses the pass's connection without closing it.
-    check_row = pg_row_matches(lambda: contextlib.nullcontext(conn), check.table, check.lookup_field,
-                               check.fields_to_compare, check.exists, check.expected)
-
-    def verify(params, result, ctx):
-        try:
-            return check_row(params, result, ctx)
-        except psycopg.OperationalError:
-            # Timed out or lost the connection: skip this database's other rows until the next pass,
-            # or each one waits the full timeout. A wrong table (ProgrammingError) isn't caught here.
-            conn.close()
-            connections[url] = None
-            raise
-
-    return verify
-
-
-# One entry per system: turns the check saved in the row into a verify function.
-# Each system reads its connection from VERILAYS_<SYSTEM>_<NAME>, opened once per pass and kept
-# in `connections` (URL → connection, or None once it failed to answer in this pass).
-SYSTEMS = {"postgres": _postgres}
 
 
 def _verify_from_check(row, connections):

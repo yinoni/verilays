@@ -36,9 +36,9 @@ The demo runs with `docker compose run --build --rm demo`.
 
 **Then make it built in.** Follow how Postgres is done. A new system is one new file plus two small entries:
 
-- `verilays/recipes/postgres.py`: what the decorator saves (`PostgresCheck`), and the function that looks the record up and returns a `CheckResult`. Your system gets its own file next to it.
+- `verilays/systems/postgres.py`: what the decorator saves (`PostgresCheck`), the function that looks the record up and returns a `CheckResult`, and `verify_from_saved`, which opens the connection and turns the saved check into that function. Your system gets its own file next to it.
 - `verilays/__init__.py`: `action.postgres(...)`, the decorator people write on their tool, and its LangGraph twin in `_LangGraph` (one line, passing `from_state=True`).
-- `verilays/worker.py`: one entry in `SYSTEMS`, which turns the saved check into a check function. Each system reads its connection from `VERILAYS_<SYSTEM>_<NAME>`.
+- `verilays/systems/__init__.py`: one entry in `SYSTEMS`, your system's name → its `verify_from_saved`. Each system reads its connection from `VERILAYS_<SYSTEM>`, or `VERILAYS_<SYSTEM>_<DB>` when the check names a db.
 
 Every check keeps four rules:
 

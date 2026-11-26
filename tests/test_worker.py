@@ -8,7 +8,9 @@ import pytest
 
 import verilays
 from tests.conftest import DSN
-from verilays import recipes, store
+from verilays import store
+from verilays.systems import postgres
+from verilays.systems.postgres import pg_row_matches
 from verilays.checks import CheckResult
 from verilays import worker
 from verilays.worker import run_every, run_once
@@ -24,7 +26,7 @@ def book_tool(writes=True, returns_dict=True):
     @verilays.action(
         tool_name="create_booking",
         system="postgres:bookings",
-        verify=recipes.pg_row_matches(
+        verify=pg_row_matches(
             connect=bookings_conn,
             table="bookings",
             lookup_field="id",
@@ -93,7 +95,7 @@ def test_two_matching_rows_are_ambiguous_and_stay_pending(bookings):
     @verilays.action(
         tool_name="book_room",
         system="postgres:bookings",
-        verify=recipes.pg_row_matches(bookings_conn, "bookings", lookup_field="room", fields_to_compare=[]),
+        verify=pg_row_matches(bookings_conn, "bookings", lookup_field="room", fields_to_compare=[]),
     )
     def book_room(room):
         return {"room": room}
@@ -193,7 +195,7 @@ def test_lookup_field_falls_back_to_params_when_the_result_lacks_it(bookings):
     @verilays.action(
         tool_name="move_booking",
         system="postgres:bookings",
-        verify=recipes.pg_row_matches(bookings_conn, "bookings", lookup_field="id", fields_to_compare=["room"]),
+        verify=pg_row_matches(bookings_conn, "bookings", lookup_field="id", fields_to_compare=["room"]),
     )
     def move_booking(id, room):
         with bookings_conn() as conn:
@@ -208,7 +210,7 @@ def test_lookup_field_falls_back_to_params_when_the_result_lacks_it(bookings):
 
 def test_pg_row_matches_with_a_bad_lookup_field_fails_in_the_worker_not_when_the_tool_loads(bookings):
     tool = book_tool()
-    verilays.registry["create_booking"]["verify"] = recipes.pg_row_matches(
+    verilays.registry["create_booking"]["verify"] = pg_row_matches(
         bookings_conn, "bookings", lookup_field={"id": "id", "room": "room"}, fields_to_compare=[])
     tool(room=4, start_time="10:00")
 
@@ -259,7 +261,7 @@ def test_checked_database_connection_refuses_writes(bookings, monkeypatch):
     postgres_tool()(room=4, start_time="10:00")
     connections = {}
 
-    worker._postgres(only_row(bookings)["check"], connections)
+    postgres.verify_from_saved(only_row(bookings)["check"], connections)
 
     with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
         connections[DSN].execute("INSERT INTO bookings (room) VALUES (5)")
@@ -790,7 +792,7 @@ def test_each_batch_commits_before_the_next_one_starts(db):
 def test_a_hanging_query_times_out_and_the_rest_of_that_database_waits_for_the_next_pass(
         bookings, monkeypatch):
     monkeypatch.setenv("VERILAYS_POSTGRES_BOOKINGS", DSN)
-    monkeypatch.setattr(worker, "CHECK_TIMEOUT_SECONDS", 1)
+    monkeypatch.setattr(postgres, "CHECK_TIMEOUT_SECONDS", 1)
     create_booking = postgres_tool()
     create_booking(room=1, start_time="10:00")
     create_booking(room=2, start_time="10:00")
@@ -818,7 +820,7 @@ def test_a_hanging_query_times_out_and_the_rest_of_that_database_waits_for_the_n
 
 def test_a_database_that_never_answers_times_out_once_per_pass(db, monkeypatch):
     monkeypatch.setenv("VERILAYS_POSTGRES_BOOKINGS", "postgresql://u@10.255.255.1/bookings")
-    monkeypatch.setattr(worker, "CHECK_TIMEOUT_SECONDS", 2)  # libpq's smallest connect_timeout
+    monkeypatch.setattr(postgres, "CHECK_TIMEOUT_SECONDS", 2)  # libpq's smallest connect_timeout
     for _ in range(2):
         store.insert_action(DSN, "create_booking", "postgres", {"room": 4}, {"id": 1},
                             check={"db": "bookings", "table": "bookings", "lookup_field": "id",
