@@ -256,7 +256,7 @@ def _find_earlier_duplicate(conn, row):
         return None
     # shortcut: every field in fields_to_compare counts, so a different `notes` hides a duplicate;
     # add a separate list of identity fields if that bites.
-    same_values = {f: row["params"][f] for f in check.fields_to_compare}
+    same_values = {argument: row["params"][argument] for argument in check.fields_to_compare.values()}
     window = verilays.parse_duration(check.duplicate_window)
     earlier = conn.execute(
         "SELECT action_id FROM verilays_actions"

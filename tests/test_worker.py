@@ -292,6 +292,28 @@ def test_expected_values_win_over_params_for_the_same_field(bookings, monkeypatc
     assert by_id[2]["evidence"]["diff"] == {"room": {"expected": 9, "got": "4"}}
 
 
+def test_columns_named_differently_from_the_arguments_are_checked_through_the_mapping(bookings, monkeypatch):
+    monkeypatch.setenv("VERILAYS_POSTGRES_BOOKINGS", DSN)
+
+    @verilays.action.postgres(db="bookings", table="bookings", lookup_field={"id": "booking_id"},
+                              fields_to_compare={"room": "room_number", "start_time": "at"})
+    def book(room_number, at, works=True):
+        with bookings_conn() as conn:
+            row = conn.execute("INSERT INTO bookings (room, start_time) VALUES (%s, %s) RETURNING id",
+                               (room_number if works else 5, at)).fetchone()
+        return {"booking_id": row[0]}
+
+    book(room_number=4, at="10:00")
+    book(room_number=4, at="10:00", works=False)
+    run_once()
+
+    first, second = bookings.execute("SELECT * FROM verilays_actions ORDER BY created_at").fetchall()
+    assert first["status"] == "verified"
+    assert second["status"] == "mismatch"
+    assert second["evidence"] == {"key": {"id": 2}, "diff": {"room": {"expected": 4, "got": "5"}}}
+    assert second["duplicate_of"] == first["action_id"]  # same room_number and at
+
+
 def test_missing_db_env_var_is_a_check_error_and_is_not_retried(bookings, monkeypatch):
     monkeypatch.delenv("VERILAYS_POSTGRES_BOOKINGS", raising=False)
     postgres_tool()(room=4, start_time="10:00")

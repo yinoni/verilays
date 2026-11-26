@@ -77,13 +77,15 @@ def create_order(customer, amount):
 
 The tool must return a dict holding `lookup_field` (`{"id": 42}`), or take it as an argument (`cancel_order(id)`) when it doesn't return it. Each name in `fields_to_compare` must be both a tool argument and a column. The worker then finds the row `orders.id = 42` and checks that its `customer` and `amount` match what the agent passed.
 
+When a column is named differently from the argument, map it, column first: `fields_to_compare={"customer_id": "customer", "amount_cents": "amount"}`. The same goes for the lookup: `lookup_field={"id": "order_id"}` when the tool returns `{"order_id": 42}`.
+
 The action is recorded under the function's name, `create_order`. If your agent knows the tool by another name, pass it first: `@verilays.action.postgres("place_order", db=...)`.
 
 For a delete tool, pass `exists=False`: the action is verified once the row is gone, and a row still there at the deadline is a mismatch.
 
 For a value the tool sets that isn't one of its arguments, pass `expected={"status": "cancelled"}`. A field in both `fields_to_compare` and `expected` is checked against `expected`.
 
-A wrong setting, like `lookup_field=5` or `deadline="5 min"`, never breaks your tool: it still runs, isn't checked, and a warning says why (`create_order runs but is not checked: lookup_field must be str, got 5`).
+A wrong setting, like `lookup_field=5` or `deadline="5 min"`, never breaks your tool: it still runs, isn't checked, and a warning says why (`create_order runs but is not checked: lookup_field must be str | dict, got 5`). The same happens when `fields_to_compare` names an argument the tool doesn't take, such as a typo or a renamed argument.
 
 **3. Run the worker.** `db="shop"` means it reads that database's URL from `VERILAYS_POSTGRES_SHOP`:
 

@@ -40,8 +40,9 @@ def _record(type, system, arguments, result, deadline, status="pending", error=N
     if check is not None:
         # action.postgres: save only what the worker checks, so other arguments (a card number,
         # a token) and the rest of the result never reach the store.
-        lookup = check["lookup_field"]
-        arguments = {k: v for k, v in arguments.items() if k == lookup or k in check["fields_to_compare"]}
+        [lookup] = check["lookup_field"].values()
+        saved_names = {lookup, *check["fields_to_compare"].values()}
+        arguments = {k: v for k, v in arguments.items() if k in saved_names}
         result = {lookup: result[lookup]} if isinstance(result, dict) and lookup in result else None
     try:
         store.insert_action(_dsn, type, system, arguments, result, deadline, status=status,
@@ -117,11 +118,20 @@ def _action(tool_name: str | None = None, *, system: str, verify: Callable | Non
     return decorate
 
 
-def _postgres(tool_name: str | None = None, *, db: str, table: str, lookup_field: str,
-              fields_to_compare: list[str] | None = None, deadline: str = "1m", duplicate_window: str = "1m",
+def _leave_unchecked(fn, tool_name, error):
+    name = tool_name or fn.__name__
+    log.warning("%s runs but is not checked: %s", name, error)
+    return fn
+
+
+def _postgres(tool_name: str | None = None, *, db: str, table: str, lookup_field: str | dict,
+              fields_to_compare: list[str] | dict | None = None, deadline: str = "1m", duplicate_window: str = "1m",
               exists: bool = True, expected: dict | None = None) -> Callable:
     """The worker reads db's URL from VERILAYS_POSTGRES_<DB> and checks the row with pg_row_matches.
 
+    lookup_field: "id", or {"id": "booking_id"} when the tool returns (or takes) the id under another name.
+    fields_to_compare: ["room"] when the argument and the column share a name,
+    {"room_id": "room"} (column: argument) when they don't.
     duplicate_window: an earlier call with the same fields_to_compare values within this time
     marks the later one as its duplicate.
     exists=False: for a delete tool, verified once the row with lookup_field is gone.
@@ -138,14 +148,20 @@ def _postgres(tool_name: str | None = None, *, db: str, table: str, lookup_field
                               duplicate_window=duplicate_window, exists=exists, expected=expected)
     except (TypeError, ValueError) as e:
         error = e  # `e` is cleared when the except block ends
+        return lambda fn: _leave_unchecked(fn, tool_name, error)
 
-        def leave_unchecked(fn):
-            name = tool_name or fn.__name__
-            log.warning("%s runs but is not checked: %s", name, error)
-            return fn
+    record = _action(tool_name, system="postgres", check=dataclasses.asdict(check), deadline=deadline)
 
-        return leave_unchecked
-    return _action(tool_name, system="postgres", check=dataclasses.asdict(check), deadline=deadline)
+    def decorate(fn):
+        # A typo or a renamed argument would otherwise surface later as a mismatch on every call.
+        takes = inspect.signature(fn).parameters
+        missing = [argument for argument in check.fields_to_compare.values() if argument not in takes]
+        if missing:
+            error = f"fields_to_compare names {missing}, which {fn.__name__} doesn't take"
+            return _leave_unchecked(fn, tool_name, error)
+        return record(fn)
+
+    return decorate
 
 
 class _Action:
