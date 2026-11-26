@@ -139,8 +139,9 @@ def test_action_postgres_saves_its_check_in_the_row_and_needs_no_verify(db):
 
     row = db.execute("SELECT * FROM verilays_actions").fetchone()
     assert row["system"] == "postgres"
-    assert row["check"] == {"db": "bookings", "table": "bookings", "lookup_field": "id",
-                            "fields_to_compare": ["room", "start_time"], "duplicate_window": "1m",
+    assert row["check"] == {"db": "bookings", "table": "bookings", "lookup_field": {"id": "id"},
+                            "fields_to_compare": {"room": "room", "start_time": "start_time"},
+                            "duplicate_window": "1m",
                             "exists": True, "expected": None}
     assert verilays.registry == {}
 
@@ -225,8 +226,13 @@ def test_saved_check_fills_missing_keys_and_drops_unknown_ones():
 
 
 @pytest.mark.parametrize("bad, message", [
-    ({"lookup_field": 5}, "lookup_field must be str, got 5"),
-    ({"fields_to_compare": "room"}, "fields_to_compare must be list, got 'room'"),
+    ({"lookup_field": 5}, "lookup_field must be str | dict, got 5"),
+    ({"lookup_field": {"id": "order_id", "ref": "order_ref"}}, "lookup_field must name one column"),
+    ({"fields_to_compare": "room"}, "fields_to_compare must be list | dict, got 'room'"),
+    ({"fields_to_compare": {"room": ["id"]}}, "column and argument names must be str, got 'room': ['id']"),
+    ({"fields_to_compare": ["reason"]}, "fields_to_compare names ['reason'], which cancel_order doesn't take"),
+    ({"fields_to_compare": {"status": "cancelled"}},
+     "fields_to_compare names ['cancelled'], which cancel_order doesn't take"),
     ({"exists": "no"}, "exists must be bool, got 'no'"),
     ({"expected": "cancelled"}, "expected must be dict | None, got 'cancelled'"),
     ({"deadline": "5 min"}, "deadline must look like '10s', '5m' or '1h'"),
@@ -247,6 +253,19 @@ def test_action_postgres_with_a_bad_setting_still_runs_the_tool_unchecked(db, ca
 def test_action_postgres_saves_only_the_checked_arguments_and_result_field(db):
     @verilays.action.postgres("refund", db="shop", table="orders", lookup_field="order_id",
                               fields_to_compare=["amount"])
+    def refund(order_id, amount, card_number):
+        return {"order_id": order_id, "receipt_url": "https://pay.example/r/secret"}
+
+    refund(42, 30, "4111 1111 1111 1111")
+
+    row = db.execute("SELECT params, result FROM verilays_actions").fetchone()
+    assert row["params"] == {"order_id": 42, "amount": 30}
+    assert row["result"] == {"order_id": 42}
+
+
+def test_action_postgres_with_mapped_names_saves_only_the_mapped_arguments(db):
+    @verilays.action.postgres("refund", db="shop", table="orders", lookup_field={"id": "order_id"},
+                              fields_to_compare={"amount_cents": "amount"})
     def refund(order_id, amount, card_number):
         return {"order_id": order_id, "receipt_url": "https://pay.example/r/secret"}
 

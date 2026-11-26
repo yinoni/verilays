@@ -206,6 +206,17 @@ def test_lookup_field_falls_back_to_params_when_the_result_lacks_it(bookings):
     assert only_row(bookings)["status"] == "verified"
 
 
+def test_pg_row_matches_with_a_bad_lookup_field_fails_in_the_worker_not_when_the_tool_loads(bookings):
+    tool = book_tool()
+    verilays.registry["create_booking"]["verify"] = recipes.pg_row_matches(
+        bookings_conn, "bookings", lookup_field={"id": "id", "room": "room"}, fields_to_compare=[])
+    tool(room=4, start_time="10:00")
+
+    run_once()
+
+    assert only_row(bookings)["status"] == "pending"
+
+
 def postgres_tool(fields_to_compare=("room", "start_time"), **kwargs):
     """A create_booking tool that saves its check as data; no verify function, nothing in registry."""
 
@@ -290,6 +301,28 @@ def test_expected_values_win_over_params_for_the_same_field(bookings, monkeypatc
     assert by_id[1]["status"] == "verified"
     assert by_id[2]["status"] == "mismatch"
     assert by_id[2]["evidence"]["diff"] == {"room": {"expected": 9, "got": "4"}}
+
+
+def test_columns_named_differently_from_the_arguments_are_checked_through_the_mapping(bookings, monkeypatch):
+    monkeypatch.setenv("VERILAYS_POSTGRES_BOOKINGS", DSN)
+
+    @verilays.action.postgres(db="bookings", table="bookings", lookup_field={"id": "booking_id"},
+                              fields_to_compare={"room": "room_number", "start_time": "at"})
+    def book(room_number, at, works=True):
+        with bookings_conn() as conn:
+            row = conn.execute("INSERT INTO bookings (room, start_time) VALUES (%s, %s) RETURNING id",
+                               (room_number if works else 5, at)).fetchone()
+        return {"booking_id": row[0]}
+
+    book(room_number=4, at="10:00")
+    book(room_number=4, at="10:00", works=False)
+    run_once()
+
+    first, second = bookings.execute("SELECT * FROM verilays_actions ORDER BY created_at").fetchall()
+    assert first["status"] == "verified"
+    assert second["status"] == "mismatch"
+    assert second["evidence"] == {"key": {"id": 2}, "diff": {"room": {"expected": 4, "got": "5"}}}
+    assert second["duplicate_of"] == first["action_id"]  # same room_number and at
 
 
 def test_missing_db_env_var_is_a_check_error_and_is_not_retried(bookings, monkeypatch):
