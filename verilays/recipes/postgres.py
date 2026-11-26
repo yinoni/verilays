@@ -21,8 +21,8 @@ def by_column(names):
 @dataclass(kw_only=True)
 class PostgresCheck:
     """What action.postgres saves in the action's `check`, and what the worker reads back."""
-    db: str
     table: str
+    db: str | None = None
     lookup_field: str | dict
     fields_to_compare: list | dict
     duplicate_window: str = "1m"

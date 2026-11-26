@@ -149,10 +149,12 @@ def _leave_unchecked(fn, tool_name, error):
     return fn
 
 
-def _postgres(tool_name: str | None = None, *, db: str, table: str, lookup_field: str | dict,
+def _postgres(tool_name: str | None = None, *, table: str, db: str | None = None, lookup_field: str | dict,
               fields_to_compare: list[str] | dict | None = None, deadline: str = "1m", duplicate_window: str = "1m",
               exists: bool = True, expected: dict | None = None, from_state: bool = False) -> Callable:
-    """The worker reads db's URL from VERILAYS_POSTGRES_<DB> and checks the row with pg_row_matches.
+    """The worker reads the database's URL from VERILAYS_POSTGRES and checks the row with pg_row_matches.
+
+    db: only when the agent writes to more than one database; db="crm" reads VERILAYS_POSTGRES_CRM instead.
 
     lookup_field: "id", or {"id": "booking_id"} when the tool returns (or takes) the id under another name.
     fields_to_compare: ["room"] when the argument and the column share a name,

@@ -68,7 +68,7 @@ import verilays
 
 verilays.init("postgresql://verilays:verilays@localhost:55432/verilays")
 
-@verilays.action.postgres(db="shop", table="orders", lookup_field="id",
+@verilays.action.postgres(table="orders", lookup_field="id",
                           fields_to_compare=["customer", "amount"], deadline="2m")
 def create_order(customer, amount):
     ...
@@ -79,7 +79,9 @@ The tool must return a dict holding `lookup_field` (`{"id": 42}`), or take it as
 
 When a column is named differently from the argument, map it, column first: `fields_to_compare={"customer_id": "customer", "amount_cents": "amount"}`. The same goes for the lookup: `lookup_field={"id": "order_id"}` when the tool returns `{"order_id": 42}`.
 
-The action is recorded under the function's name, `create_order`. If your agent knows the tool by another name, pass it first: `@verilays.action.postgres("place_order", db=...)`.
+The action is recorded under the function's name, `create_order`. If your agent knows the tool by another name, pass it first: `@verilays.action.postgres("place_order", table=...)`.
+
+If your tools write to more than one database, name each one with `db`: `db="crm"` checks the database in `VERILAYS_POSTGRES_CRM` instead of `VERILAYS_POSTGRES`.
 
 `deadline` is how long the write may take to show up: `"10s"`, `"5m"` or `"1h"` (default `"1m"`). Until then, a row that isn't there yet stays `pending` and is checked again, so a late write still ends up `verified`. Set it longer than your slowest write (a queue, a slow API, a webhook): a deadline that's too short turns a late write into `missing`.
 
@@ -89,11 +91,11 @@ For a value the tool sets that isn't one of its arguments, pass `expected={"stat
 
 A wrong setting, like `lookup_field=5` or `deadline="5 min"`, never breaks your tool: it still runs, isn't checked, and a warning says why (`create_order runs but is not checked: lookup_field must be str | dict, got 5`). The same happens when `fields_to_compare` names an argument the tool doesn't take, such as a typo or a renamed argument.
 
-**3. Run the worker.** `db="shop"` means it reads that database's URL from `VERILAYS_POSTGRES_SHOP`:
+**3. Run the worker.** It reads the URL of the database to check from `VERILAYS_POSTGRES`:
 
 ```
 export VERILAYS_DSN=postgresql://verilays:verilays@localhost:55432/verilays
-VERILAYS_POSTGRES_SHOP=postgresql://user:pass@localhost:5432/shop verilays worker --every 10
+VERILAYS_POSTGRES=postgresql://user:pass@localhost:5432/shop verilays worker --every 10
 ```
 
 **4. Run your agent, then read the report:**
@@ -107,7 +109,7 @@ verilays report
 A LangGraph node takes one argument, the graph's state, so use `verilays.langgraph` instead of `verilays.action`. It's the same decorator, but `fields_to_compare` names keys of the state instead of arguments:
 
 ```python
-@verilays.langgraph.postgres(db="shop", table="bookings", lookup_field={"id": "booking_id"},
+@verilays.langgraph.postgres(table="bookings", lookup_field={"id": "booking_id"},
                              fields_to_compare=["customer", "time"])
 def create_booking(state):
     booking_id = db.insert(state["customer"], state["time"])
@@ -135,7 +137,7 @@ In production you run two things: a Postgres for the action store, and the worke
 
 ```
 VERILAYS_DSN=postgresql://verilays:verilays@postgres:5432/verilays
-VERILAYS_POSTGRES_SHOP=postgresql://readonly:password@your-db-host:5432/shop
+VERILAYS_POSTGRES=postgresql://readonly:password@your-db-host:5432/shop
 ```
 
 Then a `docker-compose.yml` next to it:
@@ -195,7 +197,7 @@ Everything runs in your infrastructure: the action store is your Postgres, and t
 | `ambiguous` | verified, then changed or deleted before the deadline |
 | `failed` | the tool raised; the agent got the same exception |
 | `expired` | the check itself kept failing until the deadline, so we never found out |
-| `check_error` | the worker is set up wrong (e.g. a missing `VERILAYS_POSTGRES_*`); retried when it restarts |
+| `check_error` | the worker is set up wrong (e.g. a missing `VERILAYS_POSTGRES`); retried when it restarts |
 
 An action with the same `fields_to_compare` values as one inside `duplicate_window` (default `1m`) is listed as a duplicate of it.
 

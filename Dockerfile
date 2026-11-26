@@ -1,6 +1,7 @@
 # The generic Verilays worker: configure it with env vars only, no app code needed.
 #   VERILAYS_DSN                the action store
-#   VERILAYS_POSTGRES_<NAME>    each database that action.postgres(db="<name>") checks
+#   VERILAYS_POSTGRES           the database that action.postgres checks
+#   VERILAYS_POSTGRES_<NAME>    each other database, for action.postgres(db="<name>")
 #   LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY, LANGFUSE_BASE_URL   optional: send each verdict to Langfuse
 FROM python:3.12-slim
 COPY --from=ghcr.io/astral-sh/uv:0.9 /uv /bin/uv

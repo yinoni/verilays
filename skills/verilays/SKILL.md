@@ -55,7 +55,7 @@ Show the person the plan before editing: each tool, where it writes, and the che
 
 - **Environment variables:**
   - `VERILAYS_DSN`: the action store.
-  - `VERILAYS_POSTGRES_<DB>` for each Postgres check.
+  - `VERILAYS_POSTGRES`: the database the Postgres checks read (`VERILAYS_POSTGRES_<DB>` for each tool with `db=`).
 - **The command:** `verilays worker --every 10`, plus `--app <module>` when any tool uses a custom `verify=`.
 - In production it runs as its own process or container. The repo's `Dockerfile` is a generic worker image configured with environment variables only.
 
