@@ -7,6 +7,7 @@ import re
 from collections.abc import Callable
 
 from verilays import store
+from verilays.checks import by_column, check_with_finder
 from verilays.systems.postgres import PostgresCheck
 from opentelemetry import trace
 
@@ -33,17 +34,18 @@ def init(dsn: str) -> None:
     _dsn = dsn
 
 def _record(type, system, arguments, result, deadline, status="pending", error=None, check=None, run_id=None,
-            span_id=None):
+            span_id=None, saved_fields=None):
     if _dsn is None:
         log.warning("%s not recorded: verilays.init(dsn) was never called", type)
         return
     if arguments is None:  # _arguments already warned why
         return
     if check is not None:
-        # action.postgres: save only what the worker checks, so other arguments (a card number,
-        # a token) and the rest of the result never reach the store.
         [lookup] = check["lookup_field"].values()
-        saved_names = {lookup, *check["fields_to_compare"].values()}
+        saved_fields = (lookup, tuple(check["fields_to_compare"].values()))
+    if saved_fields is not None:
+        lookup, compared_arguments = saved_fields
+        saved_names = {lookup, *compared_arguments}
         arguments = {k: v for k, v in arguments.items() if k in saved_names}
         result = {lookup: result[lookup]} if isinstance(result, dict) and lookup in result else None
     try:
@@ -84,7 +86,8 @@ def _arguments(name, bound, from_state):
     return None
 
 def _action(tool_name: str | None = None, *, system: str, verify: Callable | None = None, check: dict | None = None,
-           deadline: str = "1m", from_state: bool = False) -> Callable:
+           deadline: str = "1m", from_state: bool = False,
+           saved_fields: tuple[str, tuple[str, ...]] | None = None) -> Callable:
     """With check (saved in the row), the worker needs no app code; without it, verify is required.
 
     tool_name: the function's name when left out; pass it when the agent knows the tool by another name.
@@ -92,6 +95,7 @@ def _action(tool_name: str | None = None, *, system: str, verify: Callable | Non
     deadline: how long the worker keeps looking for the write before the action is missing.
 
     from_state: read the checked fields from the first argument (a LangGraph node's state).
+    saved_fields: the lookup name and the argument names to keep for a finder-based check.
     """
     deadline = parse_duration(deadline)
     if check is None:
@@ -116,10 +120,10 @@ def _action(tool_name: str | None = None, *, system: str, verify: Callable | Non
                     result = await fn(*args, **kwargs)  # the only real difference: await
                 except Exception as e:
                     _record(name, system, arguments, None, deadline, status="failed", error=repr(e),
-                            check=check, run_id=run_id, span_id=span_id)
+                            check=check, run_id=run_id, span_id=span_id, saved_fields=saved_fields)
                     raise
                 _record(name, system, arguments, result, deadline, check=check, run_id=run_id,
-                        span_id=span_id)
+                        span_id=span_id, saved_fields=saved_fields)
                 return result
         else:
             @functools.wraps(fn)
@@ -132,10 +136,10 @@ def _action(tool_name: str | None = None, *, system: str, verify: Callable | Non
                     result = fn(*args, **kwargs)
                 except Exception as e:
                     _record(name, system, arguments, None, deadline, status="failed", error=repr(e),
-                            check=check, run_id=run_id, span_id=span_id)
+                            check=check, run_id=run_id, span_id=span_id, saved_fields=saved_fields)
                     raise
                 _record(name, system, arguments, result, deadline, check=check, run_id=run_id,
-                        span_id=span_id)
+                        span_id=span_id, saved_fields=saved_fields)
                 return result
 
         return wrapper
@@ -180,27 +184,65 @@ def _postgres(tool_name: str | None = None, *, table: str, db: str | None = None
     record = _action(tool_name, system="postgres", check=dataclasses.asdict(check), deadline=deadline,
                      from_state=from_state)
 
+    return _require_arguments(record, tool_name, check.fields_to_compare.values(), from_state)
+
+
+def _require_arguments(record, tool_name, compared_arguments, from_state=False):
     def decorate(fn):
-        if from_state:  # the state's fields only exist once the node is called
-            return record(fn)
-        # A typo or a renamed argument would otherwise surface later as a mismatch on every call.
-        takes = inspect.signature(fn).parameters
-        missing = [argument for argument in check.fields_to_compare.values() if argument not in takes]
-        if missing:
-            error = f"fields_to_compare names {missing}, which {fn.__name__} doesn't take"
-            return _leave_unchecked(fn, tool_name, error)
+        if not from_state:
+            takes = inspect.signature(fn).parameters
+            missing = [argument for argument in compared_arguments if argument not in takes]
+            if missing:
+                error = f"fields_to_compare names {missing}, which {fn.__name__} doesn't take"
+                return _leave_unchecked(fn, tool_name, error)
         return record(fn)
 
     return decorate
 
 
-class _Action:
-    """verilays.action(...) with your own verify; verilays.action.postgres(...) for a Postgres row.
+def _custom(tool_name: str | None = None, *, find: Callable | None = None,
+            lookup_field: str | dict | None = None, fields_to_compare: list[str] | dict | None = None,
+            verify: Callable | None = None, system: str = "custom", deadline: str = "1m") -> Callable:
+    """Look up a dict by key in the app and compare fields with the tool's arguments.
 
-    A class, not a function with a .postgres attribute, so editors see both signatures.
+    lookup_field takes its value from the result first, then the arguments. Use
+    fields_to_compare={"record_field": "argument"} when the names differ.
+    Load the module with --app so the worker can call find or verify.
     """
+    if find is None and lookup_field is None and fields_to_compare is None:
+        return _action(tool_name, system=system, verify=verify, deadline=deadline)
+
+    try:
+        if verify is not None or not callable(find):
+            raise TypeError("pass a callable find or a verify function")
+        parse_duration(deadline)
+        if not isinstance(lookup_field, (str, dict)):
+            raise TypeError("lookup_field must be a str or dict")
+        if fields_to_compare is not None and not isinstance(fields_to_compare, (list, dict)):
+            raise TypeError("fields_to_compare must be a list or dict")
+        lookup = by_column(lookup_field)
+        compare = dict(by_column(fields_to_compare or []))
+        if len(lookup) != 1:
+            raise ValueError("lookup_field must name one field")
+        for field, argument in (*lookup.items(), *compare.items()):
+            if not isinstance(field, str) or not isinstance(argument, str):
+                raise TypeError("field and argument names must be str")
+    except (TypeError, ValueError) as exc:
+        error = exc
+        return lambda fn: _leave_unchecked(fn, tool_name, error)
+
+    [lookup_name] = lookup.values()
+    compared_arguments = tuple(compare.values())
+    record = _action(tool_name, system=system, verify=check_with_finder(find, lookup_name, compare),
+                     deadline=deadline, saved_fields=(lookup_name, compared_arguments))
+    return _require_arguments(record, tool_name, compared_arguments)
+
+
+class _Action:
+    """Record actions with a built-in Postgres check or an app-provided finder or verifier."""
     __call__ = staticmethod(_action)
     postgres = staticmethod(_postgres)
+    custom = staticmethod(_custom)
 
 
 action = _Action()

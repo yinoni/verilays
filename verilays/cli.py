@@ -18,7 +18,7 @@ def main():
 
 
 @main.command()
-@click.option("--app", help="Module with custom verify= tools, e.g. myapp.tools. Not needed for"
+@click.option("--app", help="Module with custom find= or verify= tools, e.g. myapp.tools. Not needed for"
                             " action.postgres.")
 @click.option("--once", is_flag=True, help="Check every pending action once, then exit.")
 @click.option("--every", type=float, help="Check every N seconds until stopped (Ctrl-C or SIGTERM).")

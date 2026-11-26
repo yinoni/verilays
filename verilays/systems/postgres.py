@@ -7,19 +7,9 @@ import psycopg
 from psycopg import sql
 from psycopg.rows import dict_row
 
-from verilays.checks import CheckResult, ConfigError, DatabaseDown
+from verilays.checks import CheckResult, ConfigError, DatabaseDown, by_column, lookup_value
 
 VERILAYS_POSTGRES_ENV = "VERILAYS_POSTGRES"
-
-def by_column(names):
-    """"id" or ["room"] → {"id": "id"} or {"room": "room"}: the column and the argument share a name.
-    A dict {column: argument} is already in this shape.
-    """
-    if isinstance(names, dict):
-        return names
-    if isinstance(names, str):
-        return {names: names}
-    return {name: name for name in names}
 
 
 @dataclass(kw_only=True)
@@ -74,14 +64,7 @@ def pg_row_matches(connect: Callable, table: str, lookup_field: str | dict, fiel
         [(lookup_column, lookup_name)] = by_column(lookup_field).items()
         compare = by_column(fields_to_compare)
 
-        def lookup_value(name):
-            if isinstance(result, dict) and name in result:
-                return result[name]
-            if name in params:
-                return params[name]
-            raise LookupError(f"neither result nor params has field {name!r} (result was {result!r})")
-
-        lookup = lookup_value(lookup_name)
+        lookup = lookup_value(params, result, lookup_name)
         key = {lookup_column: lookup}
         want = {**{column: params[argument] for column, argument in compare.items()}, **(expected or {})}
         # Postgres does the comparing, so "10:00" matches a time column holding 10:00:00.
