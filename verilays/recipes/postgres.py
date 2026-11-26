@@ -65,10 +65,11 @@ def pg_row_matches(connect: Callable, table: str, lookup_field: str | dict, fiel
     exists=False: for a delete tool. Verified once the row is gone; while it's still there
     the action stays pending until the deadline, then the worker marks it mismatch.
     """
-    [(lookup_column, lookup_name)] = by_column(lookup_field).items()
-    compare = by_column(fields_to_compare)
-
     def check(params, result, ctx):
+        # Read here, not when pg_row_matches is called: a bad setting must fail in the worker, not the agent.
+        [(lookup_column, lookup_name)] = by_column(lookup_field).items()
+        compare = by_column(fields_to_compare)
+
         def lookup_value(name):
             if isinstance(result, dict) and name in result:
                 return result[name]

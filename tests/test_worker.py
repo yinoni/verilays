@@ -206,6 +206,17 @@ def test_lookup_field_falls_back_to_params_when_the_result_lacks_it(bookings):
     assert only_row(bookings)["status"] == "verified"
 
 
+def test_pg_row_matches_with_a_bad_lookup_field_fails_in_the_worker_not_when_the_tool_loads(bookings):
+    tool = book_tool()
+    verilays.registry["create_booking"]["verify"] = recipes.pg_row_matches(
+        bookings_conn, "bookings", lookup_field={"id": "id", "room": "room"}, fields_to_compare=[])
+    tool(room=4, start_time="10:00")
+
+    run_once()
+
+    assert only_row(bookings)["status"] == "pending"
+
+
 def postgres_tool(fields_to_compare=("room", "start_time"), **kwargs):
     """A create_booking tool that saves its check as data; no verify function, nothing in registry."""
 
