@@ -111,6 +111,51 @@ Each verdict then shows up in Langfuse as a `verilays` score on the tool call, w
 
 On a `mismatch`, that line includes the real values from your database (`start_time: expected 10:00, got 11:00:00`), so they're sent to Langfuse too.
 
+### Running it on your servers
+
+In production you run two things: a Postgres for the action store, and the worker container. Copy [`.env.example`](.env.example) to `.env` and fill it in:
+
+```
+VERILAYS_DSN=postgresql://verilays:verilays@postgres:5432/verilays
+VERILAYS_POSTGRES_SHOP=postgresql://readonly:password@your-db-host:5432/shop
+```
+
+Then a `docker-compose.yml` next to it:
+
+```yaml
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: verilays
+      POSTGRES_PASSWORD: verilays
+      POSTGRES_DB: verilays
+    volumes: [verilays-store:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "verilays"]
+      interval: 2s
+
+  verilays-worker:
+    build: https://github.com/yinoni/verilays.git#main
+    command: verilays worker --every 10
+    env_file: .env
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+
+volumes:
+  verilays-store:
+```
+
+```
+docker compose up -d
+docker compose exec verilays-worker verilays report
+```
+
+Your agent calls `verilays.init(...)` with the same store, at an address it can reach (expose `postgres`'s port, or use a Postgres you already run and drop the `postgres` service). Inside the container, `localhost` is the container itself: a database on the host is `host.docker.internal` (on Linux, also add `extra_hosts: ["host.docker.internal:host-gateway"]` to the worker).
+
+With a custom `verify=` check, the worker needs your code: build your own image on top of this one with your module copied in, and add `--app myagent.tools` to the command.
+
 ## How it works
 
 1. The decorator runs your tool unchanged, then records the tool name, a deadline and what the worker needs to check: for `action.postgres`, only the lookup field and the compared fields. A custom `verify=` check also saves the tool's arguments and result.
