@@ -102,6 +102,20 @@ VERILAYS_POSTGRES_SHOP=postgresql://user:pass@localhost:5432/shop verilays worke
 verilays report
 ```
 
+### Using LangGraph?
+
+A LangGraph node takes one argument, the graph's state, so use `verilays.langgraph` instead of `verilays.action`. It's the same decorator, but `fields_to_compare` names keys of the state instead of arguments:
+
+```python
+@verilays.langgraph.postgres(db="shop", table="bookings", lookup_field={"id": "booking_id"},
+                             fields_to_compare=["customer", "time"])
+def create_booking(state):
+    booking_id = db.insert(state["customer"], state["time"])
+    return {"booking_id": booking_id}
+```
+
+The state can be a dict, a `TypedDict`, a dataclass or a Pydantic model. Only the checked keys are saved. For a node that writes outside Postgres, use `@verilays.langgraph(system=..., verify=fn)`, which saves the whole state as the arguments.
+
 ### Using Langfuse?
 
 When a tool runs inside a Langfuse trace, its action is linked to that trace and tool call. Install the extra and give the worker your Langfuse keys:

@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 import datetime
 
 import pytest
@@ -294,3 +295,57 @@ def test_run_id_and_span_id_are_the_ids_of_the_calling_span(db):
     rows = db.execute("SELECT run_id, span_id FROM verilays_actions ORDER BY created_at").fetchall()
     ids = [(row["run_id"], row["span_id"]) for row in rows]
     assert ids == [(None, None), (trace_id, span_id)]
+
+
+@dataclasses.dataclass
+class RefundState:
+    order_id: int
+    amount: int
+    card_number: str
+
+
+class PydanticLikeState:
+    def __init__(self, **fields):
+        self.fields = fields
+
+    def model_dump(self):
+        return self.fields
+
+
+@pytest.mark.parametrize("state", [
+    {"order_id": 42, "amount": 30, "card_number": "4111 1111 1111 1111"},
+    RefundState(order_id=42, amount=30, card_number="4111 1111 1111 1111"),
+    PydanticLikeState(order_id=42, amount=30, card_number="4111 1111 1111 1111"),
+])
+def test_langgraph_postgres_saves_only_the_checked_fields_of_the_state(db, state):
+    @verilays.langgraph.postgres("refund", db="shop", table="orders", lookup_field={"id": "refund_id"},
+                                 fields_to_compare=["order_id", "amount"])
+    def refund_node(state):
+        return {"refund_id": 7, "receipt_url": "https://pay.example/r/secret"}
+
+    assert refund_node(state) == {"refund_id": 7, "receipt_url": "https://pay.example/r/secret"}
+
+    row = db.execute("SELECT params, result FROM verilays_actions").fetchone()
+    assert row["params"] == {"order_id": 42, "amount": 30}
+    assert row["result"] == {"refund_id": 7}
+
+
+def test_langgraph_async_node_with_a_custom_verify_records_its_state_fields(db):
+    @verilays.langgraph(system="crm", verify=never_checked)
+    async def send_email(state, config=None):
+        return {"sent": True}
+
+    assert asyncio.run(send_email({"to": "a@example.com"})) == {"sent": True}
+
+    row = db.execute("SELECT params, result FROM verilays_actions").fetchone()
+    assert row["params"] == {"to": "a@example.com"}
+    assert row["result"] == {"sent": True}
+
+
+def test_langgraph_node_with_an_unknown_state_still_runs_and_is_not_recorded(db):
+    @verilays.langgraph.postgres(db="shop", table="orders", lookup_field="id", fields_to_compare=["amount"])
+    def refund_node(state):
+        return {"id": 1}
+
+    assert refund_node("not a state") == {"id": 1}
+    assert db.execute("SELECT count(*) AS n FROM verilays_actions").fetchone()["n"] == 0
