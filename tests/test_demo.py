@@ -5,7 +5,7 @@ from tests.conftest import DSN
 
 
 def test_demo_ends_with_each_scenario_status(db, monkeypatch, capsys, caplog):
-    monkeypatch.setenv("VERILAYS_POSTGRES_BOOKINGS", DSN)
+    monkeypatch.setenv("VERILAYS_POSTGRES", DSN)
 
     with caplog.at_level(logging.WARNING, logger="verilays"):
         run(DSN, DSN, deadline="4s", every=0.5, overwrite_after=1, late_after=2)

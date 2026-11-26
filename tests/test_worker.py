@@ -217,10 +217,10 @@ def test_pg_row_matches_with_a_bad_lookup_field_fails_in_the_worker_not_when_the
     assert only_row(bookings)["status"] == "pending"
 
 
-def postgres_tool(fields_to_compare=("room", "start_time"), **kwargs):
+def postgres_tool(fields_to_compare=("room", "start_time"), db="bookings", **kwargs):
     """A create_booking tool that saves its check as data; no verify function, nothing in registry."""
 
-    @verilays.action.postgres("create_booking", db="bookings", table="bookings",
+    @verilays.action.postgres("create_booking", db=db, table="bookings",
                               lookup_field="id", fields_to_compare=list(fields_to_compare), **kwargs)
     def create_booking(room, start_time):
         with bookings_conn() as conn:
@@ -242,6 +242,16 @@ def test_action_postgres_is_verified_with_only_the_db_env_var(bookings, monkeypa
     row = only_row(bookings)
     assert row["status"] == "verified"
     assert row["evidence"] == {"key": {"id": 1}}
+
+
+def test_action_postgres_without_db_reads_verilays_postgres(bookings, monkeypatch):
+    monkeypatch.setenv("VERILAYS_POSTGRES", DSN)
+    monkeypatch.delenv("VERILAYS_POSTGRES_BOOKINGS", raising=False)
+    postgres_tool(db=None)(room=4, start_time="10:00")
+
+    run_once()
+
+    assert only_row(bookings)["status"] == "verified"
 
 
 def test_checked_database_connection_refuses_writes(bookings, monkeypatch):

@@ -31,15 +31,19 @@ CHECK_TIMEOUT_SECONDS = 5
 
 def _postgres(saved_check, connections):
     check = PostgresCheck.from_saved(saved_check)
-    db_name = check.db.upper()
-    env = f"VERILAYS_POSTGRES_{db_name}"
+    # db names one of several databases; without it, the one database is in VERILAYS_POSTGRES.
+    if check.db is None:
+        env = "VERILAYS_POSTGRES"
+    else:
+        db_name = check.db.upper()
+        env = f"VERILAYS_POSTGRES_{db_name}"
 
     if env not in os.environ:
-        raise ConfigError(f"{env} is not set; set it to the URL of the {check.db!r} database")
+        raise ConfigError(f"{env} is not set; set it to the URL of the database to check")
 
     url = os.environ[env]
     if url in connections and connections[url] is None:
-        raise DatabaseDown(f"{check.db!r} didn't answer earlier in this pass")
+        raise DatabaseDown(f"the database in {env} didn't answer earlier in this pass")
     if url not in connections:
         try:
             # autocommit: a failed query (say, a wrong table) must not abort the next row's check.
