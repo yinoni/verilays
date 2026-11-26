@@ -48,6 +48,7 @@ Show the person the plan before editing: each tool, where it writes, and the che
 ### 4. Wrap the tools
 
 - Put the Verilays decorator directly on the function, under any framework decorator such as `@tool`.
+- A LangGraph node takes the graph's state: use `verilays.langgraph.postgres(...)` or `verilays.langgraph(...)` in place of `verilays.action...`, with `fields_to_compare` naming keys of the state.
 - Keep each tool's behaviour exactly as it was.
 
 ### 5. Run the worker

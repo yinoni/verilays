@@ -325,6 +325,27 @@ def test_columns_named_differently_from_the_arguments_are_checked_through_the_ma
     assert second["duplicate_of"] == first["action_id"]  # same room_number and at
 
 
+def test_langgraph_node_is_checked_against_the_fields_of_its_state(bookings, monkeypatch):
+    monkeypatch.setenv("VERILAYS_POSTGRES_BOOKINGS", DSN)
+
+    @verilays.langgraph.postgres(db="bookings", table="bookings", lookup_field={"id": "booking_id"},
+                                 fields_to_compare=["room", "start_time"])
+    def book(state, works=True):
+        with bookings_conn() as conn:
+            row = conn.execute("INSERT INTO bookings (room, start_time) VALUES (%s, %s) RETURNING id",
+                               (state["room"] if works else 5, state["start_time"])).fetchone()
+        return {"booking_id": row[0]}
+
+    book({"room": 4, "start_time": "10:00", "messages": ["book room 4"]})
+    book({"room": 6, "start_time": "11:00", "messages": ["book room 6"]}, works=False)
+    run_once()
+
+    first, second = bookings.execute("SELECT * FROM verilays_actions ORDER BY created_at").fetchall()
+    assert first["status"] == "verified"
+    assert second["status"] == "mismatch"
+    assert second["evidence"] == {"key": {"id": 2}, "diff": {"room": {"expected": 6, "got": "5"}}}
+
+
 def test_missing_db_env_var_is_a_check_error_and_is_not_retried(bookings, monkeypatch):
     monkeypatch.delenv("VERILAYS_POSTGRES_BOOKINGS", raising=False)
     postgres_tool()(room=4, start_time="10:00")

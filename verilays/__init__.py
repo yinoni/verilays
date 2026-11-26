@@ -37,6 +37,8 @@ def _record(type, system, arguments, result, deadline, status="pending", error=N
     if _dsn is None:
         log.warning("%s not recorded: verilays.init(dsn) was never called", type)
         return
+    if arguments is None:  # _arguments already warned why
+        return
     if check is not None:
         # action.postgres: save only what the worker checks, so other arguments (a card number,
         # a token) and the rest of the result never reach the store.
@@ -62,13 +64,34 @@ def _current_trace_ids():
     span_id = format(ctx.span_id, "016x")
     return trace_id, span_id
 
+def _arguments(name, bound, from_state):
+    """The arguments the check reads: the tool's own, or with from_state the fields of its first argument.
+
+    A LangGraph node takes one state: a dict or TypedDict, a dataclass, or a Pydantic model.
+    Any other state gives None, so the call isn't recorded, with a warning.
+    """
+    if not from_state:
+        return dict(bound.arguments)
+    state = next(iter(bound.arguments.values()), None)
+    if isinstance(state, dict):
+        return dict(state)
+    if dataclasses.is_dataclass(state) and not isinstance(state, type):
+        return {field.name: getattr(state, field.name) for field in dataclasses.fields(state)}
+    if hasattr(state, "model_dump"):
+        return state.model_dump()
+    log.warning("%s runs but is not checked: its state must be a dict, dataclass or Pydantic model, got %r",
+                name, state)
+    return None
+
 def _action(tool_name: str | None = None, *, system: str, verify: Callable | None = None, check: dict | None = None,
-           deadline: str = "1m") -> Callable:
+           deadline: str = "1m", from_state: bool = False) -> Callable:
     """With check (saved in the row), the worker needs no app code; without it, verify is required.
 
     tool_name: the function's name when left out; pass it when the agent knows the tool by another name.
 
     deadline: how long the worker keeps looking for the write before the action is missing.
+
+    from_state: read the checked fields from the first argument (a LangGraph node's state).
     """
     deadline = parse_duration(deadline)
     if check is None:
@@ -88,13 +111,14 @@ def _action(tool_name: str | None = None, *, system: str, verify: Callable | Non
                 run_id, span_id = _current_trace_ids()
                 bound = sig.bind(*args, **kwargs)
                 bound.apply_defaults()
+                arguments = _arguments(name, bound, from_state)
                 try:
                     result = await fn(*args, **kwargs)  # the only real difference: await
                 except Exception as e:
-                    _record(name, system, dict(bound.arguments), None, deadline, status="failed", error=repr(e),
+                    _record(name, system, arguments, None, deadline, status="failed", error=repr(e),
                             check=check, run_id=run_id, span_id=span_id)
                     raise
-                _record(name, system, dict(bound.arguments), result, deadline, check=check, run_id=run_id,
+                _record(name, system, arguments, result, deadline, check=check, run_id=run_id,
                         span_id=span_id)
                 return result
         else:
@@ -103,13 +127,14 @@ def _action(tool_name: str | None = None, *, system: str, verify: Callable | Non
                 run_id, span_id = _current_trace_ids()
                 bound = sig.bind(*args, **kwargs)
                 bound.apply_defaults()
+                arguments = _arguments(name, bound, from_state)
                 try:
                     result = fn(*args, **kwargs)
                 except Exception as e:
-                    _record(name, system, dict(bound.arguments), None, deadline, status="failed", error=repr(e),
+                    _record(name, system, arguments, None, deadline, status="failed", error=repr(e),
                             check=check, run_id=run_id, span_id=span_id)
                     raise
-                _record(name, system, dict(bound.arguments), result, deadline, check=check, run_id=run_id,
+                _record(name, system, arguments, result, deadline, check=check, run_id=run_id,
                         span_id=span_id)
                 return result
 
@@ -126,7 +151,7 @@ def _leave_unchecked(fn, tool_name, error):
 
 def _postgres(tool_name: str | None = None, *, db: str, table: str, lookup_field: str | dict,
               fields_to_compare: list[str] | dict | None = None, deadline: str = "1m", duplicate_window: str = "1m",
-              exists: bool = True, expected: dict | None = None) -> Callable:
+              exists: bool = True, expected: dict | None = None, from_state: bool = False) -> Callable:
     """The worker reads db's URL from VERILAYS_POSTGRES_<DB> and checks the row with pg_row_matches.
 
     lookup_field: "id", or {"id": "booking_id"} when the tool returns (or takes) the id under another name.
@@ -150,9 +175,12 @@ def _postgres(tool_name: str | None = None, *, db: str, table: str, lookup_field
         error = e  # `e` is cleared when the except block ends
         return lambda fn: _leave_unchecked(fn, tool_name, error)
 
-    record = _action(tool_name, system="postgres", check=dataclasses.asdict(check), deadline=deadline)
+    record = _action(tool_name, system="postgres", check=dataclasses.asdict(check), deadline=deadline,
+                     from_state=from_state)
 
     def decorate(fn):
+        if from_state:  # the state's fields only exist once the node is called
+            return record(fn)
         # A typo or a renamed argument would otherwise surface later as a mismatch on every call.
         takes = inspect.signature(fn).parameters
         missing = [argument for argument in check.fields_to_compare.values() if argument not in takes]
@@ -174,3 +202,16 @@ class _Action:
 
 
 action = _Action()
+
+
+class _LangGraph:
+    """verilays.langgraph(...) and verilays.langgraph.postgres(...), for a LangGraph node.
+
+    The same as verilays.action, except the checked fields are read from the node's state, its first argument.
+    A new system added to _Action gets its line here too.
+    """
+    __call__ = staticmethod(functools.partial(_action, from_state=True))
+    postgres = staticmethod(functools.partial(_postgres, from_state=True))
+
+
+langgraph = _LangGraph()

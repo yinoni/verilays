@@ -19,7 +19,7 @@ Which check to use:
 - **The tool writes to Postgres** (including Supabase, Neon and RDS): `@verilays.action.postgres(...)`. Use `exists=False` for a delete tool, and `expected={...}` for a value the tool sets that isn't one of its arguments.
 - **The tool writes anywhere else** (a calendar, a booking API, another database): `@verilays.action(..., verify=fn)`, where `fn(params, result, row)` reads the record back through that system's own client and returns a `CheckResult`. Then run the worker with `--app <module>`, so it can import `fn`.
 
-Put the Verilays decorator directly on the function, under any framework decorator such as LangChain's `@tool`.
+Put the Verilays decorator directly on the function, under any framework decorator such as LangChain's `@tool`. On a LangGraph node, use `verilays.langgraph.postgres(...)` or `verilays.langgraph(...)`: the same decorators, but they read the checked fields from the node's state.
 
 What each status means: see "Statuses" in the README.
 
