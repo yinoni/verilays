@@ -1,11 +1,15 @@
+import contextlib
+import os
 from collections.abc import Callable
 from dataclasses import dataclass, fields
 
+import psycopg
 from psycopg import sql
 from psycopg.rows import dict_row
 
-from verilays.checks import CheckResult
+from verilays.checks import CheckResult, ConfigError, DatabaseDown
 
+VERILAYS_POSTGRES_ENV = "VERILAYS_POSTGRES"
 
 def by_column(names):
     """"id" or ["room"] → {"id": "id"} or {"room": "room"}: the column and the argument share a name.
@@ -113,3 +117,52 @@ def pg_row_matches(connect: Callable, table: str, lookup_field: str | dict, fiel
         return CheckResult.verified(key=key)  # no row values: they'd only repeat what matched
 
     return check
+
+
+# A check is a lookup by key, normally a few ms; past this the database is stuck, not slow.
+CHECK_TIMEOUT_SECONDS = 5
+
+
+def verify_from_saved(saved_check, connections):
+    """The worker's entry: the saved PostgresCheck → a verify function on this pass's connection."""
+    check = PostgresCheck.from_saved(saved_check)
+    # db names one of several databases; without it, the one database is in VERILAYS_POSTGRES.
+
+    env = VERILAYS_POSTGRES_ENV
+
+    if check.db is not None:
+        env = f"{VERILAYS_POSTGRES_ENV}_{check.db.upper()}"
+
+    if env not in os.environ:
+        raise ConfigError(f"{env} is not set; set it to the URL of the database to check")
+
+    url = os.environ[env]
+    if url in connections and connections[url] is None:
+        raise DatabaseDown(f"the database in {env} didn't answer earlier in this pass")
+    if url not in connections:
+        try:
+            # autocommit: a failed query (say, a wrong table) must not abort the next row's check.
+            # read_only: Postgres refuses writes here even if the URL's user is allowed to write.
+            connections[url] = psycopg.connect(
+                url, autocommit=True, connect_timeout=CHECK_TIMEOUT_SECONDS,
+                options=f"-c statement_timeout={CHECK_TIMEOUT_SECONDS}s -c default_transaction_read_only=on")
+        except psycopg.OperationalError:
+            connections[url] = None
+            raise
+    conn = connections[url]
+
+    # nullcontext: pg_row_matches's `with` uses the pass's connection without closing it.
+    check_row = pg_row_matches(lambda: contextlib.nullcontext(conn), check.table, check.lookup_field,
+                               check.fields_to_compare, check.exists, check.expected)
+
+    def verify(params, result, ctx):
+        try:
+            return check_row(params, result, ctx)
+        except psycopg.OperationalError:
+            # Timed out or lost the connection: skip this database's other rows until the next pass,
+            # or each one waits the full timeout. A wrong table (ProgrammingError) isn't caught here.
+            conn.close()
+            connections[url] = None
+            raise
+
+    return verify

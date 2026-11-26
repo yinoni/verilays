@@ -7,7 +7,7 @@ import re
 from collections.abc import Callable
 
 from verilays import store
-from verilays.recipes.postgres import PostgresCheck
+from verilays.systems.postgres import PostgresCheck
 from opentelemetry import trace
 
 log = logging.getLogger(__name__)

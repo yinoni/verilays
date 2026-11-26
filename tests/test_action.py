@@ -217,7 +217,7 @@ def test_deadline_is_stored_in_deadline_at_default_1m(db):
 
 
 def test_saved_check_fills_missing_keys_and_drops_unknown_ones():
-    from verilays.recipes.postgres import PostgresCheck
+    from verilays.systems.postgres import PostgresCheck
 
     old = {"db": "bookings", "table": "bookings", "lookup_field": "id", "fields_to_compare": ["room"]}
     newer = {**old, "some_future_option": 1}
