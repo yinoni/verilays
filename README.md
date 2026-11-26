@@ -5,7 +5,7 @@
 
 An agent's "done" is a self-report. Verilays is an open-source tool that checks your database to see if what the agent claimed actually happened.
 
-[Demo](#demo) · [Use it on your agent](#use-it-on-your-agent) · [How it works](#how-it-works) · [Statuses](#statuses) · [What's next](#whats-next)
+[Demo](#demo) · [Use it on your agent](#use-it-on-your-agent) · [Running it on your servers](#running-it-on-your-servers) · [How it works](#how-it-works) · [Statuses](#statuses) · [What's next](#whats-next)
 
 Your agent tells a customer "you're booked for Tuesday at 10:00". The tool returned success, the trace looks fine, and nothing reached the database. Or it landed at 11:00. Or it landed twice. Verilays records what each tool claimed, reads the record back from your own Postgres, and tells you which of these happened.
 
