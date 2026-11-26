@@ -81,6 +81,8 @@ When a column is named differently from the argument, map it, column first: `fie
 
 The action is recorded under the function's name, `create_order`. If your agent knows the tool by another name, pass it first: `@verilays.action.postgres("place_order", db=...)`.
 
+`deadline` is how long the write may take to show up: `"10s"`, `"5m"` or `"1h"` (default `"1m"`). Until then, a row that isn't there yet stays `pending` and is checked again, so a late write still ends up `verified`. Set it longer than your slowest write (a queue, a slow API, a webhook): a deadline that's too short turns a late write into `missing`.
+
 For a delete tool, pass `exists=False`: the action is verified once the row is gone, and a row still there at the deadline is a mismatch.
 
 For a value the tool sets that isn't one of its arguments, pass `expected={"status": "cancelled"}`. A field in both `fields_to_compare` and `expected` is checked against `expected`.
