@@ -51,7 +51,7 @@ def create_table(dsn):
 def insert_action(dsn, action_type, system, params, result, deadline=datetime.timedelta(minutes=1),
                   status="pending", error=None, check=None, run_id=None, span_id=None):
     # shortcut: one connection per call; add a pool if tool-call latency shows it.
-    with psycopg.connect(dsn) as conn:
+    with psycopg.connect(dsn, connect_timeout=5) as conn:
         conn.execute(
             """INSERT INTO verilays_actions
                (action_type, system, params, result, status, next_check_at, deadline_at, error, "check", run_id, span_id)
